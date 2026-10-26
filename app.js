@@ -83,8 +83,91 @@ function allGenres(){ const s = new Map(); lib().forEach(n => (n.genres||[]).for
 /* ---------- layers: novel page and sheets close with the phone's back button ---------- */
 const layers = [];
 function pushLayer(node, onClose){ $("#layer").appendChild(node); layers.push({node, onClose}); history.pushState({layer: layers.length}, ""); }
-function back(){ if (layers.length) history.back(); }
-window.addEventListener("popstate", () => { const L = layers.pop(); if (L){ L.node.remove(); if (L.onClose) L.onClose(); } });
+function back(steps){ steps = Math.min(typeof steps === "number" ? steps : 1, layers.length); if (steps) history.go(-steps); } // also used directly as a click handler
+// one popstate can stand for several steps (history.go(-2)), so close down to the depth history now reports
+window.addEventListener("popstate", e => {
+  const depth = (e.state && e.state.layer) || 0;
+  while (layers.length > depth){ const L = layers.pop(); L.node.remove(); if (L.onClose) L.onClose(); }
+});
+
+/* ---------- quick change: status and lists from the card, in one sheet ---------- */
+function quickSheet(n){
+  const f = sheet(n.title); f.querySelector("h2").dir = "auto";
+  f.appendChild(el("p", "section-title", "الحالة"));
+  const sg = el("div", "status-grid");
+  ORDER.forEach(k => { const b = btn("status-opt s-" + k, STATUS[k], async () => { if (n.status !== k){ n.status = k; await save(n); toast("صارت «" + STATUS[k] + "»"); } back(); }); b.setAttribute("aria-pressed", n.status === k); sg.appendChild(b); });
+  f.appendChild(sg);
+  f.appendChild(el("p", "section-title", "القوائم"));
+  const lg = el("div", "grid-opts");
+  const paint = () => { lg.innerHTML = "";
+    allShelves().forEach(s => { const on = (n.shelves||[]).includes(s); const b = btn("shelf-toggle", s, async () => { n.shelves = on ? n.shelves.filter(x => x !== s) : [...(n.shelves||[]), s]; await save(n); paint(); }); b.setAttribute("aria-pressed", on); lg.appendChild(b); });
+    lg.appendChild(btn("shelf-toggle", "+ قائمة جديدة", () => newShelfSheet(n, paint))); };
+  paint(); f.appendChild(lg);
+  const acts = el("div", "acts"); acts.append(btn("btn", "صفحة الرواية", () => { back(); setTimeout(() => detail(n.key), 60); }), btn("btn", "تعديل", () => { back(); setTimeout(() => editSheet(n), 60); }));
+  f.appendChild(acts);
+}
+
+/* ---------- multi-select: long-press a card, then change status or lists for all of them ---------- */
+let sel = null, selBar = null;
+function longPress(node, fn){
+  let t = null, x = 0, y = 0;
+  node.addEventListener("pointerdown", e => { x = e.clientX; y = e.clientY; t = setTimeout(() => { t = null; node.dataset.lp = "1"; if (navigator.vibrate) navigator.vibrate(15); fn(); }, 480); });
+  const cancel = () => { if (t){ clearTimeout(t); t = null; } };
+  node.addEventListener("pointerup", cancel); node.addEventListener("pointercancel", cancel); node.addEventListener("pointerleave", cancel);
+  node.addEventListener("pointermove", e => { if (Math.abs(e.clientX - x) + Math.abs(e.clientY - y) > 12) cancel(); });
+  // the click that ends a long-press must not also open the novel or toggle it again
+  node.addEventListener("click", e => { if (node.dataset.lp){ delete node.dataset.lp; e.stopPropagation(); e.preventDefault(); } }, true);
+  node.addEventListener("contextmenu", e => e.preventDefault());
+}
+function startSelect(k){
+  sel = new Set(k ? [k] : []);
+  selBar = el("div", "selbar");
+  pushLayer(selBar, () => { sel = null; selBar = null; render(); });
+  render();
+}
+function toggleSel(k){ if (sel.has(k)) sel.delete(k); else sel.add(k); const c = document.querySelector('.card[data-key="' + CSS.escape(k) + '"]'); if (c) c.classList.toggle("selected", sel.has(k)); updateSelBar(); }
+function updateSelBar(){
+  if (!selBar) return; selBar.innerHTML = ""; const inner = el("div", "inner");
+  inner.appendChild(el("span", "sel-count", sel.size + " محددة"));
+  const shown = [...document.querySelectorAll(".card[data-key]")].map(c => c.dataset.key);
+  const acts = el("div", "acts");
+  acts.append(
+    btn("btn", shown.every(k => sel.has(k)) && shown.length ? "لا شيء" : "الكل", () => { const allOn = shown.every(k => sel.has(k)); shown.forEach(k => allOn ? sel.delete(k) : sel.add(k)); render(); }),
+    Object.assign(btn("btn primary", "الحالة", bulkStatusSheet), {disabled: !sel.size}),
+    Object.assign(btn("btn primary", "القوائم", bulkListsSheet), {disabled: !sel.size}),
+    Object.assign(btn("btn danger", "حذف", bulkDelete), {disabled: !sel.size}),
+    btn("btn", "إلغاء", () => back()));
+  inner.appendChild(acts); selBar.appendChild(inner);
+}
+const picked = () => lib().filter(n => sel && sel.has(n.key));
+function bulkStatusSheet(){
+  const f = sheet("حالة " + sel.size + " رواية"); const sg = el("div", "status-grid");
+  ORDER.forEach(k => sg.appendChild(btn("status-opt s-" + k, STATUS[k], async () => {
+    const now = Date.now(); const list = picked(); list.forEach(n => { n.status = k; n.updatedAt = now; });
+    await putNovels(list); back(2); toast(list.length + " رواية صارت «" + STATUS[k] + "»");
+  })));
+  f.appendChild(sg);
+}
+function bulkListsSheet(){
+  const f = sheet("قوائم " + sel.size + " رواية");
+  f.appendChild(el("p", "small", "اضغط قائمة لإضافة كل المحدد إليها، واضغطها مرة أخرى لإخراجه منها."));
+  const lg = el("div", "list-opt");
+  const paint = () => { lg.innerHTML = ""; const list = picked();
+    allShelves().forEach(s => { const c = list.filter(n => (n.shelves||[]).includes(s)).length; const all = c === list.length;
+      const b = btn("opt", ""); b.append(el("span", "", s), el("span", "", all ? "كلها فيها ✓" : c ? c + " من " + list.length : "")); b.setAttribute("aria-pressed", all);
+      b.onclick = async () => { const now = Date.now(); list.forEach(n => { n.shelves = all ? (n.shelves||[]).filter(x => x !== s) : [...new Set([...(n.shelves||[]), s])]; n.updatedAt = now; }); await putNovels(list); render(); paint(); };
+      lg.appendChild(b); });
+    lg.appendChild(btn("btn", "+ قائمة جديدة", () => newShelfSheet(null, paint))); };
+  paint(); f.appendChild(lg);
+  const acts = el("div", "acts"); acts.append(btn("btn primary", "تم", () => back(2))); f.appendChild(acts);
+}
+function bulkDelete(){
+  const f = sheet("حذف " + sel.size + " رواية");
+  f.appendChild(el("p", "sub", "ستُحذف من هذا الجهاز، وينتقل الحذف إلى جهازك الآخر عند المزامنة."));
+  const acts = el("div", "acts"); acts.append(btn("btn danger", "احذفها", async () => {
+    const now = Date.now(); const list = picked(); list.forEach(n => { n.deleted = true; n.updatedAt = now; }); await putNovels(list); back(2); toast("حُذفت " + list.length + " رواية");
+  }), btn("btn", "إلغاء", () => back())); f.appendChild(acts);
+}
 function sheet(title){
   const wrapper = el("div"); const scrim = el("div", "scrim"); scrim.onclick = back;
   const sh = el("div", "sheet"); sh.setAttribute("role", "dialog"); sh.setAttribute("aria-modal", "true");
@@ -129,12 +212,21 @@ function render(){
     b.setAttribute("aria-pressed", view.status === k); chips.appendChild(b);
   });
   $("#count").textContent = lib().length ? lib().length + " رواية" : "";
-  const nf = view.shelves.length + view.genres.length;
-  $("#filterBtn").textContent = nf ? "التصنيفات (" + nf + ")" : "التصنيفات"; $("#filterBtn").classList.toggle("on", !!nf);
+  // lists bar: one tap shows a list, a second tap on it goes back to everything
+  const lc = $("#listChips"); lc.innerHTML = ""; const lists = allShelves();
+  lc.hidden = !lib().length;
+  const allBtn = btn("chip list", "كل الروايات", () => { view.shelves = []; saveView(); render(); }); allBtn.setAttribute("aria-pressed", !view.shelves.length); lc.appendChild(allBtn);
+  lists.forEach(s => { const on = view.shelves.includes(s);
+    const b = btn("chip list", s + " " + lib().filter(n => (n.shelves||[]).includes(s)).length, () => { view.shelves = on && view.shelves.length === 1 ? [] : [s]; saveView(); render(); });
+    b.setAttribute("aria-pressed", on); lc.appendChild(b); });
+  lc.appendChild(btn("chip list add", "+ قائمة", () => newShelfSheet(null)));
+  const nf = view.genres.length;
+  $("#filterBtn").textContent = nf ? "الأنواع (" + nf + ")" : "الأنواع"; $("#filterBtn").classList.toggle("on", !!nf);
   $("#sort").value = view.sort;
   const af = $("#activeFilters"); af.innerHTML = ""; af.hidden = !nf;
-  view.shelves.forEach(s => af.appendChild(btn("af", "رف: " + s + " ✕", () => { view.shelves = view.shelves.filter(x => x !== s); saveView(); render(); })));
   view.genres.forEach(g => af.appendChild(btn("af", g + " ✕", () => { view.genres = view.genres.filter(x => x !== g); saveView(); render(); })));
+  document.body.classList.toggle("selecting", !!sel);
+  if (sel) updateSelBar();
 
   const list = $("#list"); list.innerHTML = "";
   if (!lib().length){
@@ -144,18 +236,22 @@ function render(){
     list.appendChild(e);
   } else {
     const shown = (view.status === "all" ? base : base.filter(n => n.status === view.status)).sort(SORTS[view.sort] || SORTS.recent);
-    if (!shown.length){ const e = el("div", "empty"); e.append(el("b", "", "لا نتائج"), el("span", "", "غيّر البحث أو الحالة أو التصنيفات.")); list.appendChild(e); }
+    if (!shown.length){ const e = el("div", "empty"); e.append(el("b", "", "لا نتائج"), el("span", "", "غيّر البحث أو الحالة أو القائمة.")); list.appendChild(e); }
     const frag = document.createDocumentFragment(); shown.forEach(n => frag.appendChild(card(n))); list.appendChild(frag);
   }
   if (detailKey) drawDetail();
 }
 function card(n){
-  const c = el("article", "card");
-  const cv = btn("cover", "", () => detail(n.key), "تفاصيل " + n.title); cv.appendChild(coverNode(n).firstChild || document.createTextNode((n.title||"؟").charAt(0)));
+  const c = el("article", "card"); c.dataset.key = n.key;
+  if (sel && sel.has(n.key)) c.classList.add("selected");
+  const openOrPick = () => sel ? toggleSel(n.key) : detail(n.key);
+  const cv = btn("cover", "", openOrPick, "تفاصيل " + n.title); cv.appendChild(coverNode(n).firstChild || document.createTextNode((n.title||"؟").charAt(0)));
   const body = el("div", "body");
-  const open = btn("open", "", () => detail(n.key)); const h = el("h3", "title", n.title || "بدون اسم"); h.dir = "auto"; open.appendChild(h);
+  const open = btn("open", "", openOrPick); const h = el("h3", "title", n.title || "بدون اسم"); h.dir = "auto"; open.appendChild(h);
   if (n.titleAr) open.appendChild(el("p", "sub", n.titleAr));
-  const r1 = el("div", "row1"); r1.append(open, el("span", "badge s-" + n.status, STATUS[n.status] || "")); body.appendChild(r1);
+  const badge = btn("badge s-" + n.status, (STATUS[n.status] || "") + " ▾", () => sel ? toggleSel(n.key) : quickSheet(n), "تغيير الحالة والقوائم");
+  const r1 = el("div", "row1"); r1.append(open, badge); body.appendChild(r1);
+  longPress(c, () => { if (!sel) startSelect(n.key); });
   body.appendChild(progress(n));
   const a = el("div", "acts");
   a.append(btn("btn primary plus", "+1 فصل", () => bump(n, 1)), Object.assign(btn("btn minus", "−1", () => bump(n, -1), "تراجع فصل"), {dir: "ltr"}));
@@ -207,8 +303,8 @@ function drawDetail(){
   // shelves
   const sh = el("div", "grid-opts");
   allShelves().forEach(s => { const on = (n.shelves||[]).includes(s); const b = btn("shelf-toggle", s, async () => { n.shelves = on ? n.shelves.filter(x => x !== s) : [...(n.shelves||[]), s]; await save(n); }); b.setAttribute("aria-pressed", on); sh.appendChild(b); });
-  sh.appendChild(btn("shelf-toggle", "+ رف جديد", () => newShelfSheet(n)));
-  w.append(el("p", "h3", "الرفوف"), sh);
+  sh.appendChild(btn("shelf-toggle", "+ قائمة جديدة", () => newShelfSheet(n)));
+  w.append(el("p", "h3", "القوائم"), sh);
   // description + translation
   const dr = el("div", "p-top"); dr.appendChild(el("p", "h3", "الوصف"));
   const ar = !!showAr[n.key] && !!n.descAr;
@@ -275,7 +371,7 @@ function editSheet(n){
   const two1 = el("div", "two"); two1.append(field("آخر فصل قرأته", ch), field("عدد الفصول الكلي", tot));
   f.append(field("اسم الرواية", title), field("اسم آخر (اختياري)", alt), field("الرابط (اختياري)", url), two1, field("الحالة", st));
   const rl = el("div", "f", "تقييمك"); rl.appendChild(stars); f.appendChild(rl);
-  const sl = el("div", "f", "الرفوف"); sl.appendChild(shBox); f.appendChild(sl);
+  const sl = el("div", "f", "القوائم"); sl.appendChild(shBox); f.appendChild(sl);
   f.append(field("الوصف", desc), field("ملاحظة", note), coverBtn);
   const warn = el("p", "small"); warn.hidden = true; f.appendChild(warn);
   let forceAdd = false;
@@ -310,27 +406,30 @@ async function shrink(file){
   c.getContext("2d").drawImage(img, 0, 0, c.width, c.height);
   return await new Promise(r => c.toBlob(r, "image/webp", 0.75));
 }
-function newShelfSheet(n){
-  const f = sheet("رف جديد"); const i = document.createElement("input"); i.placeholder = "مثل: المفضلة، أعيد قراءتها، نظام، زراعة";
-  const l = el("label", "f", "اسم الرف"); l.appendChild(i); f.appendChild(l);
-  const acts = el("div", "acts"); acts.append(btn("btn primary", "إضافة", async () => {
+function newShelfSheet(n, after){
+  const f = sheet("قائمة جديدة"); const i = document.createElement("input"); i.placeholder = "مثل: المفضلة، أعيد قراءتها، نظام، زراعة، للعطلة";
+  const l = el("label", "f", "اسم القائمة"); l.appendChild(i); f.appendChild(l);
+  const add = async () => {
     const s = i.value.trim(); if (!s) return;
     await setMeta("shelves", [...new Set([...(meta.shelves||[]), s])]);
     if (n && !(n.shelves||[]).includes(s)){ n.shelves = [...(n.shelves||[]), s]; back(); await save(n); } else { back(); render(); }
-  }), btn("btn", "إلغاء", back)); f.appendChild(acts);
+    if (after) after();
+  };
+  i.addEventListener("keydown", e => { if (e.key === "Enter") add(); });
+  const acts = el("div", "acts"); acts.append(btn("btn primary", "إضافة", add), btn("btn", "إلغاء", back)); f.appendChild(acts);
   setTimeout(() => i.focus(), 60);
 }
 
 /* ---------- categories filter ---------- */
 function filterSheet(){
-  const f = sheet("التصنيفات");
+  const f = sheet("الأنواع والقوائم");
   const paint = () => {
     f.querySelectorAll(".dyn").forEach(x => x.remove());
     const add = node => { node.classList.add("dyn"); f.appendChild(node); };
-    add(el("p", "section-title", "رفوفي"));
+    add(el("p", "section-title", "قوائمي"));
     const sh = el("div", "list-opt");
     const shelves = allShelves();
-    if (!shelves.length) sh.appendChild(el("p", "small", "لا رفوف بعد. أنشئ رفًا من صفحة أي رواية أو من القائمة."));
+    if (!shelves.length) sh.appendChild(el("p", "small", "لا قوائم بعد. أنشئ قائمة من شريط القوائم أو من أي رواية."));
     shelves.forEach(s => { const c = lib().filter(n => (n.shelves||[]).includes(s)).length; const on = view.shelves.includes(s);
       const b = btn("opt", ""); b.append(el("span", "", s), el("span", "", c)); b.setAttribute("aria-pressed", on);
       b.onclick = () => { view.shelves = on ? view.shelves.filter(x => x !== s) : [...view.shelves, s]; saveView(); render(); paint(); }; sh.appendChild(b); });
@@ -339,7 +438,7 @@ function filterSheet(){
     const gr = el("div", "grid-opts");
     allGenres().forEach(([g, c]) => { const on = view.genres.includes(g); const b = btn("shelf-toggle", g + " " + c, () => { view.genres = on ? view.genres.filter(x => x !== g) : [...view.genres, g]; saveView(); render(); paint(); }); b.setAttribute("aria-pressed", on); gr.appendChild(b); });
     add(gr);
-    const acts = el("div", "acts"); acts.append(btn("btn primary", "عرض النتائج", back), btn("btn", "مسح التصنيفات", () => { view.shelves = []; view.genres = []; saveView(); render(); paint(); }));
+    const acts = el("div", "acts"); acts.append(btn("btn primary", "عرض النتائج", back), btn("btn", "مسح الاختيار", () => { view.shelves = []; view.genres = []; saveView(); render(); paint(); }));
     add(acts);
   };
   paint();
@@ -355,7 +454,7 @@ function menuSheet(){
     + (meta.lastExport ? " آخر تصدير: " + ago(meta.lastExport) + "." : "")));
   const a1 = el("div", "acts"); a1.append(btn("btn primary", "تصدير ملف المزامنة", () => { back(); exportSync(); }), btn("btn", "استيراد ملف", () => { back(); $("#fileIn").click(); })); f.appendChild(a1);
   f.appendChild(el("p", "section-title", "إضافة وتنظيم"));
-  const a2 = el("div", "acts"); a2.append(btn("btn", "إضافة عدة روايات", () => { back(); setTimeout(bulkSheet, 50); }), btn("btn", "إدارة الرفوف", () => { back(); setTimeout(shelvesSheet, 50); })); f.appendChild(a2);
+  const a2 = el("div", "acts"); a2.append(btn("btn", "إضافة عدة روايات", () => { back(); setTimeout(bulkSheet, 50); }), btn("btn", "إدارة القوائم", () => { back(); setTimeout(shelvesSheet, 50); })); f.appendChild(a2);
   f.appendChild(el("p", "small", "البيانات محفوظة في هذا الجهاز فقط" + (meta.persisted ? "، والمتصفح لن يمسحها تلقائيًا." : ". صدّر ملفًا من وقت لآخر كنسخة احتياطية.")));
 }
 function bulkSheet(){
@@ -379,7 +478,7 @@ function bulkSheet(){
   }), btn("btn", "إلغاء", back)); f.appendChild(acts);
 }
 function shelvesSheet(){
-  const f = sheet("إدارة الرفوف");
+  const f = sheet("إدارة القوائم");
   const paint = () => {
     f.querySelectorAll(".dyn").forEach(x => x.remove());
     const box = el("div", "list-opt dyn");
@@ -400,9 +499,9 @@ function shelvesSheet(){
       }));
       row.appendChild(acts); box.appendChild(row);
     });
-    if (!allShelves().length) box.appendChild(el("p", "small", "لا رفوف بعد."));
+    if (!allShelves().length) box.appendChild(el("p", "small", "لا قوائم بعد."));
     f.appendChild(box);
-    const add = btn("btn primary dyn", "+ رف جديد", () => { back(); setTimeout(() => newShelfSheet(null), 50); }); f.appendChild(add);
+    const add = btn("btn primary dyn", "+ قائمة جديدة", () => { back(); setTimeout(() => newShelfSheet(null), 50); }); f.appendChild(add);
   };
   paint();
 }
@@ -468,6 +567,7 @@ async function importFile(file){
 $("#q").addEventListener("input", e => { view.q = e.target.value; render(); });
 $("#sort").addEventListener("change", e => { view.sort = e.target.value; saveView(); render(); });
 $("#filterBtn").onclick = filterSheet;
+$("#selectBtn").onclick = () => { if (!sel) startSelect(null); };
 $("#menuBtn").onclick = menuSheet;
 $("#addBtn").onclick = () => editSheet(null);
 $("#fileIn").addEventListener("change", e => { const f = e.target.files[0]; e.target.value = ""; if (f) importFile(f); });

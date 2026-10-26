@@ -114,3 +114,23 @@ label.f{display:flex;flex-direction:column;gap:5px;font-size:13px;color:var(--mu
 .toast{position:fixed;inset-inline:0;bottom:calc(84px + env(safe-area-inset-bottom,0px));text-align:center;z-index:60;pointer-events:none;padding:0 16px}
 .toast span{display:inline-block;background:var(--fg);color:var(--bg);padding:8px 16px;border-radius:999px;font-size:14px}
 @media (prefers-reduced-motion:no-preference){.bar i{transition:width .25s}}
+
+/* lists bar, quick status, multi-select */
+.chip.list{border-style:dashed}
+.chip.list[aria-pressed="true"]{border-style:solid;background:var(--accent-soft);border-color:var(--accent);color:var(--fg)}
+.chip.add{color:var(--accent);border-color:var(--accent)}
+.bar-left{display:flex;gap:8px}
+button.badge{background:none;cursor:pointer;font-family:inherit}
+.status-grid{display:grid;grid-template-columns:1fr 1fr;gap:8px}
+.status-opt{border:1px solid currentColor;background:var(--bg);border-radius:12px;padding:12px;font-size:16px;font-weight:600;cursor:pointer;min-height:48px}
+.status-opt[aria-pressed="true"]{background:var(--accent-soft)}
+.card.selected{border-color:var(--accent);box-shadow:0 0 0 2px var(--accent) inset;background:var(--accent-soft)}
+.card{-webkit-user-select:none;user-select:none;-webkit-touch-callout:none}
+.selbar{position:fixed;inset-inline:0;bottom:0;z-index:35;background:var(--surface);border-top:1px solid var(--line);
+  padding:10px max(16px,env(safe-area-inset-right,0px)) calc(10px + env(safe-area-inset-bottom,0px)) max(16px,env(safe-area-inset-left,0px))}
+.selbar .inner{max-width:1180px;margin:0 auto;display:flex;flex-direction:column;gap:8px}
+.selbar .acts .btn{flex:1;min-width:0;padding:8px 6px;font-size:14px}
+.sel-count{font-weight:600}
+body.selecting .fab{display:none}
+body.selecting{padding-bottom:calc(150px + env(safe-area-inset-bottom,0px))}
+.btn.minus{direction:ltr;unicode-bidi:isolate}
