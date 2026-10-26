@@ -1,0 +1,54 @@
+<!doctype html>
+<html lang="ar" dir="rtl">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>مكتبتي</title>
+<meta name="description" content="مكتبة شخصية لروايات الويب تعمل بلا إنترنت">
+<meta name="theme-color" content="#0f1420" media="(prefers-color-scheme: dark)">
+<meta name="theme-color" content="#f2f4f8" media="(prefers-color-scheme: light)">
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="icon" href="icons/icon-192.png">
+<link rel="apple-touch-icon" href="icons/icon-192.png">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans+Arabic:wght@400;500;600&family=Aref+Ruqaa:wght@700&display=swap">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<div class="wrap">
+  <header id="top">
+    <div class="top">
+      <h1>مكتبتي</h1>
+      <div class="top-acts">
+        <span class="count" id="count"></span>
+        <button class="icon-btn" id="menuBtn" type="button" aria-label="الإعدادات والمزامنة">☰</button>
+      </div>
+    </div>
+    <input class="search" id="q" type="search" placeholder="ابحث بالاسم أو الوصف أو النوع أو المؤلف" autocomplete="off">
+    <div class="chips" id="statusChips" role="group" aria-label="الحالة"></div>
+    <div class="bar-row">
+      <button class="pill" id="filterBtn" type="button">التصنيفات</button>
+      <label class="sort"><span>الترتيب</span>
+        <select id="sort">
+          <option value="recent">آخر تحديث</option>
+          <option value="name">الاسم</option>
+          <option value="rating">التقييم</option>
+          <option value="progress">نسبة التقدم</option>
+          <option value="left">الأقرب للنهاية</option>
+          <option value="added">الأحدث إضافة</option>
+        </select>
+      </label>
+    </div>
+    <div class="active-filters" id="activeFilters" hidden></div>
+  </header>
+  <main class="list" id="list"></main>
+</div>
+<button class="fab" id="addBtn" type="button">+ رواية</button>
+<div id="layer"></div>
+<div class="toast" id="toast" aria-live="polite"></div>
+<input type="file" id="fileIn" accept=".json,application/json" hidden>
+<input type="file" id="coverIn" accept="image/*" hidden>
+<script src="app.js"></script>
+</body>
+</html>

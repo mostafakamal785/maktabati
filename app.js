@@ -1,0 +1,481 @@
+"use strict";
+/* مكتبتي: a personal web-novel library that lives on the device (IndexedDB).
+   No server and no account. Devices sync by exporting a file on one and importing it on the other. */
+
+const STATUS = {reading:"أقرأ الآن", planned:"أنوي قراءتها", paused:"متوقفة", done:"مكتملة", dropped:"تركتها"};
+const ORDER = ["reading","planned","paused","done","dropped"];
+const PROGRESS_FIELDS = ["title","altTitle","url","chapter","total","status","rating","note","shelves","titleAr","descAr","deleted","customCover"];
+const CATALOG_FIELDS = ["desc","genres","author","source"];
+const $ = s => document.querySelector(s);
+const KEY = s => (s||"").toLowerCase().replace(/[^a-z0-9؀-ۿ]/g,"");
+
+let db, all = [], coverUrls = new Map(), detailKey = null, meta = {};
+let view = {q:"", status:"all", shelves:[], genres:[], sort:"recent"};
+try { Object.assign(view, JSON.parse(localStorage.getItem("view")||"{}"), {q:""}); } catch(e) {}
+
+/* ---------- storage ---------- */
+function openDB(){
+  return new Promise((res, rej) => {
+    const r = indexedDB.open("maktabati", 1);
+    r.onupgradeneeded = () => { const d = r.result; d.createObjectStore("novels", {keyPath:"key"}); d.createObjectStore("covers"); d.createObjectStore("meta"); };
+    r.onsuccess = () => { db = r.result; res(); };
+    r.onerror = () => rej(r.error);
+  });
+}
+// runs op on one store inside a single transaction; resolves with the request's result when the transaction commits
+function idb(store, mode, op){
+  return new Promise((res, rej) => {
+    const t = db.transaction(store, mode); const r = op(t.objectStore(store));
+    t.oncomplete = () => res(r && "result" in r ? r.result : undefined);
+    t.onerror = t.onabort = () => rej(t.error);
+  });
+}
+const putNovels = list => idb("novels", "readwrite", s => { list.forEach(n => s.put(n)); });
+const putCover = (k, blob) => idb("covers", "readwrite", s => s.put(blob, k));
+const setMeta = (k, v) => { meta[k] = v; return idb("meta", "readwrite", s => s.put(v, k)); };
+
+async function loadAll(){
+  all = await idb("novels", "readonly", s => s.getAll());
+  const keys = await idb("covers", "readonly", s => s.getAllKeys());
+  const blobs = await idb("covers", "readonly", s => s.getAll());
+  coverUrls.forEach(u => URL.revokeObjectURL(u)); coverUrls.clear();
+  keys.forEach((k, i) => coverUrls.set(k, URL.createObjectURL(blobs[i])));
+  const mk = await idb("meta", "readonly", s => s.getAllKeys());
+  const mv = await idb("meta", "readonly", s => s.getAll());
+  meta = {}; mk.forEach((k, i) => meta[k] = mv[i]);
+}
+const lib = () => all.filter(n => !n.deleted);
+const find = k => k ? all.find(n => n.key === k || (n.aliases||[]).includes(k)) : null;
+
+async function save(n, touch = true){
+  if (touch) n.updatedAt = Date.now();
+  await putNovels([n]);
+  const i = all.findIndex(x => x.key === n.key); if (i >= 0) all[i] = n; else all.push(n);
+  render();
+}
+
+/* ---------- small helpers ---------- */
+function el(tag, cls, text){ const e = document.createElement(tag); if (cls) e.className = cls; if (text !== undefined) e.textContent = text; return e; }
+function btn(cls, text, fn, label){ const b = el("button", cls, text); b.type = "button"; if (fn) b.onclick = fn; if (label) b.setAttribute("aria-label", label); return b; }
+function toast(t){ const box = $("#toast"); box.innerHTML = ""; box.appendChild(el("span", "", t)); clearTimeout(toast.t); toast.t = setTimeout(() => box.innerHTML = "", 2400); }
+function ago(t){
+  if (!t) return ""; const d = Math.floor((Date.now() - t) / 86400000);
+  if (d <= 0) return "اليوم"; if (d === 1) return "أمس"; if (d < 30) return "قبل " + d + " يوم";
+  if (d < 365) return "قبل " + Math.floor(d / 30) + " شهر"; return "قبل " + Math.floor(d / 365) + " سنة";
+}
+function similar(a, b){
+  if (a === b) return 1; const m = a.length, n = b.length; if (!m || !n) return 0;
+  const d = Array(n + 1).fill(0).map((_, j) => j);
+  for (let i = 1; i <= m; i++){ let p = d[0]; d[0] = i; for (let j = 1; j <= n; j++){ const t = d[j]; d[j] = Math.min(d[j] + 1, d[j-1] + 1, p + (a[i-1] === b[j-1] ? 0 : 1)); p = t; } }
+  return 1 - d[n] / Math.max(m, n);
+}
+function saveView(){ try { localStorage.setItem("view", JSON.stringify({...view, q:""})); } catch(e) {} }
+function coverNode(n, big){
+  const box = el("div", "cover"); const url = coverUrls.get(n.key);
+  if (url){ const im = document.createElement("img"); im.src = url; im.alt = ""; im.loading = "lazy"; box.appendChild(im); }
+  else box.textContent = (n.title || "؟").trim().charAt(0).toUpperCase();
+  if (big) box.style.cursor = "default";
+  return box;
+}
+function allShelves(){ const s = new Set(meta.shelves || []); lib().forEach(n => (n.shelves||[]).forEach(x => s.add(x))); return [...s].sort((a, b) => a.localeCompare(b, "ar")); }
+function allGenres(){ const s = new Map(); lib().forEach(n => (n.genres||[]).forEach(g => s.set(g, (s.get(g)||0) + 1))); return [...s].sort((a, b) => b[1] - a[1]); }
+
+/* ---------- layers: novel page and sheets close with the phone's back button ---------- */
+const layers = [];
+function pushLayer(node, onClose){ $("#layer").appendChild(node); layers.push({node, onClose}); history.pushState({layer: layers.length}, ""); }
+function back(){ if (layers.length) history.back(); }
+window.addEventListener("popstate", () => { const L = layers.pop(); if (L){ L.node.remove(); if (L.onClose) L.onClose(); } });
+function sheet(title){
+  const wrapper = el("div"); const scrim = el("div", "scrim"); scrim.onclick = back;
+  const sh = el("div", "sheet"); sh.setAttribute("role", "dialog"); sh.setAttribute("aria-modal", "true");
+  const inner = el("div", "inner"); inner.appendChild(el("h2", "", title)); sh.appendChild(inner);
+  wrapper.append(scrim, sh); pushLayer(wrapper); return inner;
+}
+
+/* ---------- progress ---------- */
+async function bump(n, d){
+  n.chapter = Math.max(0, (Number(n.chapter) || 0) + d);
+  if (d > 0 && n.total > 0 && n.chapter >= n.total) n.status = "done";
+  else if (d > 0 && n.status !== "reading" && n.status !== "done") n.status = "reading";
+  n.lastReadAt = Date.now();
+  await save(n);
+}
+
+/* ---------- library list ---------- */
+function filtered(skipStatus){
+  const q = view.q.trim().toLowerCase();
+  return lib().filter(n => {
+    if (!skipStatus && view.status !== "all" && n.status !== view.status) return false;
+    if (view.shelves.length && !view.shelves.every(s => (n.shelves||[]).includes(s))) return false;
+    if (view.genres.length && !view.genres.some(g => (n.genres||[]).includes(g))) return false;
+    if (q){ const hay = [n.title, n.altTitle, n.titleAr, n.desc, n.descAr, n.author, n.note, (n.genres||[]).join(" "), (n.shelves||[]).join(" ")].join(" ").toLowerCase(); if (!hay.includes(q)) return false; }
+    return true;
+  });
+}
+const SORTS = {
+  recent: (a, b) => (b.updatedAt||0) - (a.updatedAt||0),
+  name: (a, b) => (a.title||"").localeCompare(b.title||"", "ar"),
+  rating: (a, b) => (b.rating||0) - (a.rating||0) || (b.updatedAt||0) - (a.updatedAt||0),
+  progress: (a, b) => (b.total ? b.chapter / b.total : -1) - (a.total ? a.chapter / a.total : -1),
+  left: (a, b) => (a.total ? a.total - a.chapter : 1e9) - (b.total ? b.total - b.chapter : 1e9),
+  added: (a, b) => (b.createdAt||0) - (a.createdAt||0),
+};
+function render(){
+  const base = filtered(true);
+  const chips = $("#statusChips"); chips.innerHTML = "";
+  [["all", "الكل", base.length], ...ORDER.map(k => [k, STATUS[k], base.filter(n => n.status === k).length])].forEach(([k, label, c]) => {
+    if (k !== "all" && !c && view.status !== k) return;
+    const b = btn("chip", label + " " + c, () => { view.status = k; saveView(); render(); });
+    b.setAttribute("aria-pressed", view.status === k); chips.appendChild(b);
+  });
+  $("#count").textContent = lib().length ? lib().length + " رواية" : "";
+  const nf = view.shelves.length + view.genres.length;
+  $("#filterBtn").textContent = nf ? "التصنيفات (" + nf + ")" : "التصنيفات"; $("#filterBtn").classList.toggle("on", !!nf);
+  $("#sort").value = view.sort;
+  const af = $("#activeFilters"); af.innerHTML = ""; af.hidden = !nf;
+  view.shelves.forEach(s => af.appendChild(btn("af", "رف: " + s + " ✕", () => { view.shelves = view.shelves.filter(x => x !== s); saveView(); render(); })));
+  view.genres.forEach(g => af.appendChild(btn("af", g + " ✕", () => { view.genres = view.genres.filter(x => x !== g); saveView(); render(); })));
+
+  const list = $("#list"); list.innerHTML = "";
+  if (!lib().length){
+    const e = el("div", "empty"); e.append(el("b", "", "مكتبتك فارغة"),
+      el("span", "", "استورد ملف البداية «مكتبتي_بداية.json» أو ملف مزامنة من جهازك الآخر، أو أضف أول رواية بيدك."),
+      btn("btn primary", "استيراد ملف", () => $("#fileIn").click()), btn("btn", "إضافة رواية", () => editSheet(null)));
+    list.appendChild(e);
+  } else {
+    const shown = (view.status === "all" ? base : base.filter(n => n.status === view.status)).sort(SORTS[view.sort] || SORTS.recent);
+    if (!shown.length){ const e = el("div", "empty"); e.append(el("b", "", "لا نتائج"), el("span", "", "غيّر البحث أو الحالة أو التصنيفات.")); list.appendChild(e); }
+    const frag = document.createDocumentFragment(); shown.forEach(n => frag.appendChild(card(n))); list.appendChild(frag);
+  }
+  if (detailKey) drawDetail();
+}
+function card(n){
+  const c = el("article", "card");
+  const cv = btn("cover", "", () => detail(n.key), "تفاصيل " + n.title); cv.appendChild(coverNode(n).firstChild || document.createTextNode((n.title||"؟").charAt(0)));
+  const body = el("div", "body");
+  const open = btn("open", "", () => detail(n.key)); const h = el("h3", "title", n.title || "بدون اسم"); h.dir = "auto"; open.appendChild(h);
+  if (n.titleAr) open.appendChild(el("p", "sub", n.titleAr));
+  const r1 = el("div", "row1"); r1.append(open, el("span", "badge s-" + n.status, STATUS[n.status] || "")); body.appendChild(r1);
+  body.appendChild(progress(n));
+  const a = el("div", "acts");
+  a.append(btn("btn primary plus", "+1 فصل", () => bump(n, 1)), Object.assign(btn("btn minus", "−1", () => bump(n, -1), "تراجع فصل"), {dir: "ltr"}));
+  if (n.url){ const l = el("a", "btn", "فتح"); l.href = n.url; l.target = "_blank"; l.rel = "noopener"; a.appendChild(l); }
+  body.appendChild(a);
+  const m = el("div", "meta");
+  if (n.rating > 0) m.appendChild(el("span", "stars", "★".repeat(n.rating) + "☆".repeat(5 - n.rating)));
+  (n.shelves||[]).slice(0, 3).forEach(s => m.appendChild(el("span", "tag shelf", s)));
+  if (n.lastReadAt || n.updatedAt) m.appendChild(el("span", "", "آخر تحديث " + ago(n.lastReadAt || n.updatedAt)));
+  if (m.childNodes.length) body.appendChild(m);
+  c.append(cv, body); return c;
+}
+function progress(n){
+  const p = el("div", "prog"); const num = el("div", "num", String(n.chapter || 0));
+  num.appendChild(el("small", "", n.total ? "من " + n.total : "فصل")); p.appendChild(num);
+  if (n.total > 0){ const b = el("div", "bar"); const i = document.createElement("i"); i.style.width = Math.min(100, Math.round((n.chapter||0) / n.total * 100)) + "%"; b.appendChild(i); p.appendChild(b); }
+  return p;
+}
+
+/* ---------- novel page ---------- */
+let showAr = {}, trBusy = {};
+function detail(k){
+  detailKey = k; const page = el("div", "page"); page.id = "page"; page.setAttribute("role", "dialog"); page.setAttribute("aria-modal", "true");
+  pushLayer(page, () => { detailKey = null; }); drawDetail();
+}
+function drawDetail(){
+  const page = document.getElementById("page"); const n = find(detailKey);
+  if (!page) return; if (!n || n.deleted){ back(); return; }
+  const keep = page.scrollTop; page.innerHTML = ""; const w = el("div", "inner"); page.appendChild(w);
+  const top = el("div", "p-top"); top.append(btn("btn", "رجوع", back), btn("btn", "تعديل", () => editSheet(n))); w.appendChild(top);
+  const head = el("div", "p-head"); head.appendChild(coverNode(n, true));
+  const ht = el("div", "body");
+  const t = el("h2", "p-title", n.title); t.dir = "auto"; ht.appendChild(t);
+  if (n.altTitle){ const s = el("p", "sub", n.altTitle); s.dir = "auto"; ht.appendChild(s); }
+  if (n.titleAr) ht.appendChild(el("p", "p-title-ar", n.titleAr));
+  if (n.author) ht.appendChild(el("p", "sub", "المؤلف: " + n.author));
+  if ((n.genres||[]).length){ const tg = el("div", "tags"); n.genres.forEach(g => tg.appendChild(el("span", "tag", g))); ht.appendChild(tg); }
+  const st = el("span", "badge s-" + n.status, STATUS[n.status]); st.style.alignSelf = "flex-start"; ht.appendChild(st);
+  if (n.rating > 0) ht.appendChild(el("span", "stars", "★".repeat(n.rating) + "☆".repeat(5 - n.rating)));
+  head.appendChild(ht); w.appendChild(head);
+  w.appendChild(progress(n));
+  const a = el("div", "acts");
+  a.append(btn("btn primary plus", "+1 فصل", () => bump(n, 1)), Object.assign(btn("btn minus", "−1", () => bump(n, -1), "تراجع فصل"), {dir: "ltr"}));
+  if (n.url){ const l = el("a", "btn", "فتح الرواية"); l.href = n.url; l.target = "_blank"; l.rel = "noopener"; a.appendChild(l); }
+  w.appendChild(a);
+  // quick status change
+  const sr = el("div", "grid-opts"); ORDER.forEach(k => { const b = btn("shelf-toggle", STATUS[k], async () => { n.status = k; await save(n); }); b.setAttribute("aria-pressed", n.status === k); sr.appendChild(b); });
+  w.append(el("p", "h3", "الحالة"), sr);
+  // shelves
+  const sh = el("div", "grid-opts");
+  allShelves().forEach(s => { const on = (n.shelves||[]).includes(s); const b = btn("shelf-toggle", s, async () => { n.shelves = on ? n.shelves.filter(x => x !== s) : [...(n.shelves||[]), s]; await save(n); }); b.setAttribute("aria-pressed", on); sh.appendChild(b); });
+  sh.appendChild(btn("shelf-toggle", "+ رف جديد", () => newShelfSheet(n)));
+  w.append(el("p", "h3", "الرفوف"), sh);
+  // description + translation
+  const dr = el("div", "p-top"); dr.appendChild(el("p", "h3", "الوصف"));
+  const ar = !!showAr[n.key] && !!n.descAr;
+  if (n.descAr){ const seg = el("div", "seg"); [["الأصل", false], ["العربية", true]].forEach(([lb, v]) => { const b = btn("", lb, () => { showAr[n.key] = v; drawDetail(); }); b.setAttribute("aria-pressed", ar === v); seg.appendChild(b); }); dr.appendChild(seg); }
+  w.appendChild(dr);
+  const body = el("p", "p-desc", ar ? n.descAr : (n.desc || "لا يوجد وصف لهذه الرواية.")); body.dir = ar || !n.desc ? "rtl" : "ltr"; w.appendChild(body);
+  if (!n.descAr || !n.titleAr){
+    const tr = el("div", "acts");
+    const b = btn("btn", trBusy[n.key] ? "جارٍ الترجمة…" : "ترجمة الاسم والوصف", () => translate(n)); b.disabled = !!trBusy[n.key];
+    const g = el("a", "btn", "ترجمة Google"); g.target = "_blank"; g.rel = "noopener";
+    g.href = "https://translate.google.com/?sl=auto&tl=ar&op=translate&text=" + encodeURIComponent((n.title + "\n\n" + (n.desc||"")).slice(0, 4500));
+    tr.append(b, g); w.appendChild(tr);
+  }
+  if (n.note){ w.append(el("p", "h3", "ملاحظتي"), el("p", "sub", n.note)); }
+  const info = [];
+  if (n.source) info.push("مصدر الوصف والغلاف: " + n.source);
+  if (n.createdAt) info.push("أضيفت " + ago(n.createdAt));
+  if (info.length) w.appendChild(el("p", "small", info.join(" · ")));
+  page.scrollTop = keep;
+}
+
+/* ---------- free translation (MyMemory, no key; result is saved so each novel is translated once) ---------- */
+async function mt(text){
+  const parts = []; let cur = "";
+  for (const s of text.split(/(?<=[.!?…])\s+|\n+/)){ if ((cur + " " + s).length > 450 && cur){ parts.push(cur); cur = s; } else cur = cur ? cur + " " + s : s; }
+  if (cur) parts.push(cur);
+  const out = [];
+  for (const p of parts){
+    const r = await fetch("https://api.mymemory.translated.net/get?langpair=en|ar&q=" + encodeURIComponent(p));
+    const j = await r.json();
+    if (j.responseStatus != 200 || /MYMEMORY WARNING/i.test(j.responseData?.translatedText || "")) throw new Error("quota");
+    out.push(j.responseData.translatedText);
+  }
+  return out.join(" ");
+}
+async function translate(n){
+  if (!navigator.onLine){ toast("الترجمة تحتاج إنترنت"); return; }
+  trBusy[n.key] = true; drawDetail();
+  try {
+    if (!n.titleAr) n.titleAr = await mt(n.title);
+    if (!n.descAr && n.desc) n.descAr = await mt(n.desc);
+    showAr[n.key] = true; await save(n, false); await putNovels([n]);
+  } catch(e){ toast(e.message === "quota" ? "انتهت الترجمات المجانية لليوم، استخدم ترجمة Google" : "تعذّرت الترجمة، حاول لاحقًا"); }
+  trBusy[n.key] = false; drawDetail();
+}
+
+/* ---------- add / edit ---------- */
+function editSheet(n){
+  const isNew = !n; const d = n ? {...n} : {title:"", url:"", chapter:0, total:0, status:"planned", rating:0, note:"", shelves:[]};
+  const f = sheet(isNew ? "رواية جديدة" : "تعديل الرواية");
+  const field = (label, input) => { const l = el("label", "f", label); l.appendChild(input); return l; };
+  const inp = (type, val, extra = {}) => { const i = document.createElement("input"); i.type = type; i.value = val ?? ""; Object.assign(i, extra); return i; };
+  const title = inp("text", d.title, {required: true, autocomplete: "off"}), alt = inp("text", d.altTitle || "");
+  const url = inp("url", d.url, {placeholder: "https://", inputMode: "url"}); url.dir = "ltr";
+  const ch = inp("number", d.chapter || 0, {min: 0, inputMode: "numeric"}), tot = inp("number", d.total || "", {min: 0, inputMode: "numeric", placeholder: "إن عرفته"});
+  const st = document.createElement("select"); ORDER.forEach(k => { const o = el("option", "", STATUS[k]); o.value = k; st.appendChild(o); }); st.value = d.status;
+  const note = document.createElement("textarea"); note.rows = 2; note.value = d.note || "";
+  const desc = document.createElement("textarea"); desc.rows = 3; desc.value = d.desc || ""; desc.dir = "auto";
+  let rating = d.rating || 0; const stars = el("div", "stars-in");
+  const paint = () => { stars.innerHTML = ""; for (let i = 1; i <= 5; i++){ const b = btn(i <= rating ? "on" : "", "★", () => { rating = rating === i ? 0 : i; paint(); }, i + " من 5"); stars.appendChild(b); } }; paint();
+  let shelves = [...(d.shelves||[])]; const shBox = el("div", "grid-opts");
+  const paintSh = () => { shBox.innerHTML = ""; allShelves().concat(shelves.filter(s => !allShelves().includes(s))).forEach(s => { const on = shelves.includes(s); const b = btn("shelf-toggle", s, () => { shelves = on ? shelves.filter(x => x !== s) : [...shelves, s]; paintSh(); }); b.setAttribute("aria-pressed", on); shBox.appendChild(b); }); }; paintSh();
+  let newCover = null; const coverBtn = btn("btn", "اختيار غلاف من الجهاز", () => { $("#coverIn").onchange = async e => { const file = e.target.files[0]; e.target.value = ""; if (file){ newCover = await shrink(file); coverBtn.textContent = "تم اختيار الغلاف ✓"; } }; $("#coverIn").click(); });
+  const two1 = el("div", "two"); two1.append(field("آخر فصل قرأته", ch), field("عدد الفصول الكلي", tot));
+  f.append(field("اسم الرواية", title), field("اسم آخر (اختياري)", alt), field("الرابط (اختياري)", url), two1, field("الحالة", st));
+  const rl = el("div", "f", "تقييمك"); rl.appendChild(stars); f.appendChild(rl);
+  const sl = el("div", "f", "الرفوف"); sl.appendChild(shBox); f.appendChild(sl);
+  f.append(field("الوصف", desc), field("ملاحظة", note), coverBtn);
+  const warn = el("p", "small"); warn.hidden = true; f.appendChild(warn);
+  let forceAdd = false;
+  const saveBtn = btn("btn primary", "حفظ", async () => {
+    const t = title.value.trim(); if (!t){ title.focus(); return; }
+    if (isNew){
+      const k = KEY(t), ex = find(k);
+      if (ex && !ex.deleted){ warn.hidden = false; warn.textContent = "هذه الرواية موجودة في مكتبتك."; return; }
+      const near = !forceAdd && lib().map(x => [x, similar(KEY(x.title), k)]).sort((a, b) => b[1] - a[1])[0];
+      if (near && near[1] >= 0.85){ warn.hidden = false; warn.textContent = "تشبه رواية موجودة: «" + near[0].title + "». اضغط حفظ مرة أخرى لإضافتها على أي حال."; forceAdd = true; return; }
+    }
+    const rec = isNew ? {key: KEY(t), aliases: [], createdAt: Date.now(), genres: [], author: "", source: ""} : n;
+    Object.assign(rec, {title: t, altTitle: alt.value.trim(), url: url.value.trim(), chapter: Math.max(0, parseInt(ch.value) || 0),
+      total: Math.max(0, parseInt(tot.value) || 0), status: st.value, rating, note: note.value.trim(), shelves, desc: desc.value.trim(), deleted: false});
+    if (rec.total > 0 && rec.chapter >= rec.total && rec.status === "reading") rec.status = "done";
+    if (newCover){ await putCover(rec.key, newCover); coverUrls.set(rec.key, URL.createObjectURL(newCover)); rec.customCover = true; }
+    back(); await save(rec); toast("تم الحفظ");
+  });
+  const acts = el("div", "acts"); acts.append(saveBtn, btn("btn", "إلغاء", back)); f.appendChild(acts);
+  if (!isNew){
+    const del = btn("btn danger", "حذف الرواية", async () => {
+      if (!del.dataset.sure){ del.dataset.sure = 1; del.textContent = "اضغط مرة أخرى للتأكيد"; return; }
+      back(); n.deleted = true; await save(n); toast("تم الحذف");
+    });
+    f.appendChild(del);
+  }
+  if (isNew) setTimeout(() => title.focus(), 60);
+}
+async function shrink(file){
+  const img = await createImageBitmap(file); const s = Math.min(1, 320 / img.height, 240 / img.width);
+  const c = document.createElement("canvas"); c.width = Math.round(img.width * s); c.height = Math.round(img.height * s);
+  c.getContext("2d").drawImage(img, 0, 0, c.width, c.height);
+  return await new Promise(r => c.toBlob(r, "image/webp", 0.75));
+}
+function newShelfSheet(n){
+  const f = sheet("رف جديد"); const i = document.createElement("input"); i.placeholder = "مثل: المفضلة، أعيد قراءتها، نظام، زراعة";
+  const l = el("label", "f", "اسم الرف"); l.appendChild(i); f.appendChild(l);
+  const acts = el("div", "acts"); acts.append(btn("btn primary", "إضافة", async () => {
+    const s = i.value.trim(); if (!s) return;
+    await setMeta("shelves", [...new Set([...(meta.shelves||[]), s])]);
+    if (n && !(n.shelves||[]).includes(s)){ n.shelves = [...(n.shelves||[]), s]; back(); await save(n); } else { back(); render(); }
+  }), btn("btn", "إلغاء", back)); f.appendChild(acts);
+  setTimeout(() => i.focus(), 60);
+}
+
+/* ---------- categories filter ---------- */
+function filterSheet(){
+  const f = sheet("التصنيفات");
+  const paint = () => {
+    f.querySelectorAll(".dyn").forEach(x => x.remove());
+    const add = node => { node.classList.add("dyn"); f.appendChild(node); };
+    add(el("p", "section-title", "رفوفي"));
+    const sh = el("div", "list-opt");
+    const shelves = allShelves();
+    if (!shelves.length) sh.appendChild(el("p", "small", "لا رفوف بعد. أنشئ رفًا من صفحة أي رواية أو من القائمة."));
+    shelves.forEach(s => { const c = lib().filter(n => (n.shelves||[]).includes(s)).length; const on = view.shelves.includes(s);
+      const b = btn("opt", ""); b.append(el("span", "", s), el("span", "", c)); b.setAttribute("aria-pressed", on);
+      b.onclick = () => { view.shelves = on ? view.shelves.filter(x => x !== s) : [...view.shelves, s]; saveView(); render(); paint(); }; sh.appendChild(b); });
+    add(sh);
+    add(el("p", "section-title", "النوع"));
+    const gr = el("div", "grid-opts");
+    allGenres().forEach(([g, c]) => { const on = view.genres.includes(g); const b = btn("shelf-toggle", g + " " + c, () => { view.genres = on ? view.genres.filter(x => x !== g) : [...view.genres, g]; saveView(); render(); paint(); }); b.setAttribute("aria-pressed", on); gr.appendChild(b); });
+    add(gr);
+    const acts = el("div", "acts"); acts.append(btn("btn primary", "عرض النتائج", back), btn("btn", "مسح التصنيفات", () => { view.shelves = []; view.genres = []; saveView(); render(); paint(); }));
+    add(acts);
+  };
+  paint();
+}
+
+/* ---------- menu: stats, sync, bulk add, shelves ---------- */
+function menuSheet(){
+  const f = sheet("القائمة");
+  const L = lib(); const read = L.reduce((s, n) => s + (Number(n.chapter) || 0), 0);
+  f.appendChild(el("p", "sub", L.length + " رواية · " + ORDER.map(k => [STATUS[k], L.filter(n => n.status === k).length]).filter(x => x[1]).map(x => x[0] + " " + x[1]).join(" · ") + " · " + read.toLocaleString("ar") + " فصل مقروء"));
+  f.appendChild(el("p", "section-title", "المزامنة بين الجوال والكمبيوتر"));
+  f.appendChild(el("p", "small", "صدّر ملفًا من جهاز، وانقله بأي طريقة، ثم استورده في الجهاز الآخر. الدمج يأخذ الأحدث لكل رواية ولا يكرر شيئًا."
+    + (meta.lastExport ? " آخر تصدير: " + ago(meta.lastExport) + "." : "")));
+  const a1 = el("div", "acts"); a1.append(btn("btn primary", "تصدير ملف المزامنة", () => { back(); exportSync(); }), btn("btn", "استيراد ملف", () => { back(); $("#fileIn").click(); })); f.appendChild(a1);
+  f.appendChild(el("p", "section-title", "إضافة وتنظيم"));
+  const a2 = el("div", "acts"); a2.append(btn("btn", "إضافة عدة روايات", () => { back(); setTimeout(bulkSheet, 50); }), btn("btn", "إدارة الرفوف", () => { back(); setTimeout(shelvesSheet, 50); })); f.appendChild(a2);
+  f.appendChild(el("p", "small", "البيانات محفوظة في هذا الجهاز فقط" + (meta.persisted ? "، والمتصفح لن يمسحها تلقائيًا." : ". صدّر ملفًا من وقت لآخر كنسخة احتياطية.")));
+}
+function bulkSheet(){
+  const f = sheet("إضافة عدة روايات");
+  f.appendChild(el("p", "small", "رواية في كل سطر. يمكنك إضافة رقم الفصل والرابط بعد الاسم بخط عمودي: الاسم | 120 | https://…"));
+  const ta = document.createElement("textarea"); ta.rows = 10; ta.dir = "auto";
+  const l = el("label", "f", "القائمة"); l.appendChild(ta); f.appendChild(l);
+  const st = document.createElement("select"); ORDER.forEach(k => { const o = el("option", "", STATUS[k]); o.value = k; st.appendChild(o); }); st.value = "planned";
+  const l2 = el("label", "f", "الحالة للجميع"); l2.appendChild(st); f.appendChild(l2);
+  const acts = el("div", "acts"); acts.append(btn("btn primary", "إضافة", async () => {
+    const now = Date.now(); const add = []; const skip = [];
+    ta.value.split(/\n+/).map(x => x.trim()).filter(Boolean).forEach((line, i) => {
+      const [t, c, u] = line.split("|").map(x => (x || "").trim()); const k = KEY(t);
+      if (!k || find(k) && !find(k).deleted || add.some(x => x.key === k)){ skip.push(t); return; }
+      const chapter = parseInt(c) || 0;
+      add.push({key: k, aliases: [], title: t, altTitle: "", url: u || "", chapter, total: 0, status: chapter > 0 && st.value === "planned" ? "reading" : st.value,
+        rating: 0, note: "", shelves: [], genres: [], author: "", desc: "", source: "", createdAt: now - i, updatedAt: now - i});
+    });
+    await putNovels(add); all = all.filter(n => !add.some(a => a.key === n.key)).concat(add);
+    back(); render(); toast("أضيفت " + add.length + (skip.length ? "، وتُركت " + skip.length + " موجودة أو مكررة" : ""));
+  }), btn("btn", "إلغاء", back)); f.appendChild(acts);
+}
+function shelvesSheet(){
+  const f = sheet("إدارة الرفوف");
+  const paint = () => {
+    f.querySelectorAll(".dyn").forEach(x => x.remove());
+    const box = el("div", "list-opt dyn");
+    allShelves().forEach(s => {
+      const row = el("div", "opt"); const c = lib().filter(n => (n.shelves||[]).includes(s)).length;
+      row.append(el("span", "", s + " (" + c + ")"));
+      const acts = el("span", "acts");
+      acts.append(btn("btn", "تسمية", () => {
+        const i = document.createElement("input"); i.value = s; i.className = "search"; row.replaceChildren(i, btn("btn primary", "حفظ", async () => {
+          const t = i.value.trim(); if (!t || t === s) { paint(); return; }
+          const changed = lib().filter(n => (n.shelves||[]).includes(s)); changed.forEach(n => { n.shelves = [...new Set(n.shelves.map(x => x === s ? t : x))]; n.updatedAt = Date.now(); });
+          await putNovels(changed); await setMeta("shelves", [...new Set((meta.shelves||[]).map(x => x === s ? t : x).concat(t))]); render(); paint();
+        }));
+        i.focus();
+      }), btn("btn danger", "حذف", async () => {
+        const changed = lib().filter(n => (n.shelves||[]).includes(s)); changed.forEach(n => { n.shelves = n.shelves.filter(x => x !== s); n.updatedAt = Date.now(); });
+        await putNovels(changed); await setMeta("shelves", (meta.shelves||[]).filter(x => x !== s)); view.shelves = view.shelves.filter(x => x !== s); saveView(); render(); paint();
+      }));
+      row.appendChild(acts); box.appendChild(row);
+    });
+    if (!allShelves().length) box.appendChild(el("p", "small", "لا رفوف بعد."));
+    f.appendChild(box);
+    const add = btn("btn primary dyn", "+ رف جديد", () => { back(); setTimeout(() => newShelfSheet(null), 50); }); f.appendChild(add);
+  };
+  paint();
+}
+
+/* ---------- sync: export / import with merge ---------- */
+const blobToDataURL = b => new Promise(r => { const fr = new FileReader(); fr.onload = () => r(fr.result); fr.readAsDataURL(b); });
+async function exportSync(){
+  const covers = {};
+  for (const n of all.filter(n => n.customCover && !n.deleted)){ const b = await idb("covers", "readonly", s => s.get(n.key)); if (b) covers[n.key] = await blobToDataURL(b); }
+  const data = {app: "maktabati", kind: "sync", version: 1, exportedAt: Date.now(), novels: all, shelves: meta.shelves || [], covers};
+  const d = new Date(); const name = "مكتبتي_" + d.getFullYear() + "-" + String(d.getMonth() + 1).padStart(2, "0") + "-" + String(d.getDate()).padStart(2, "0") + ".json";
+  const file = new File([JSON.stringify(data)], name, {type: "application/json"});
+  if (navigator.canShare && navigator.canShare({files: [file]})){
+    try { await navigator.share({files: [file], title: "مكتبتي"}); await setMeta("lastExport", Date.now()); toast("تم التصدير"); return; }
+    catch(e){ if (e.name === "AbortError") return; }
+  }
+  const a = document.createElement("a"); a.href = URL.createObjectURL(file); a.download = name; document.body.appendChild(a); a.click(); a.remove();
+  setTimeout(() => URL.revokeObjectURL(a.href), 4000);
+  await setMeta("lastExport", Date.now()); toast("حُفظ الملف في التنزيلات");
+}
+// the old Claude page exported a plain array of {title, chapter, status, …}
+function fromClaudePage(r){
+  return {key: KEY(r.title), aliases: [], title: r.title || "", altTitle: "", url: r.url || "", chapter: r.chapter || 0, total: r.total || 0, status: r.status || "planned",
+    rating: r.rating || 0, note: r.note || "", shelves: [], titleAr: r.titleAr || "", descAr: r.descAr || "", createdAt: r.createdAt || Date.now(), updatedAt: r.updatedAt || Date.now()};
+}
+async function importFile(file){
+  let d; try { d = JSON.parse(await file.text()); } catch(e){ toast("الملف ليس ملف مكتبة صالحًا"); return; }
+  let recs, covers = {}, kind;
+  if (Array.isArray(d)){ kind = "claude"; recs = d.map(fromClaudePage); }
+  else if (d && d.app === "maktabati" && Array.isArray(d.novels)){ kind = d.kind; recs = d.novels; covers = d.covers || {}; if (d.shelves) await setMeta("shelves", [...new Set([...(meta.shelves||[]), ...d.shelves])]); }
+  else { toast("الملف ليس ملف مكتبة صالحًا"); return; }
+  let added = 0, updated = 0; const changed = [];
+  for (const r of recs){
+    if (!r || !r.key) continue;
+    const ex = find(r.key) || (r.aliases||[]).map(find).find(Boolean);
+    let target = null;
+    if (!ex){ if (r.deleted) continue; target = {...r}; added++; }
+    else {
+      let touched = false; const m = {...ex};
+      // progress: the newer record wins (a starter file never overrides your progress)
+      if (kind !== "starter" && (r.updatedAt||0) > (ex.updatedAt||0)){
+        PROGRESS_FIELDS.forEach(f => { if (f in r) m[f] = r[f]; });
+        if (/…$/.test(r.title||"") && !/…$/.test(ex.title||"")) m.title = ex.title; // never swap a full name for a cut-short one
+        if (kind === "claude"){ m.shelves = ex.shelves; m.altTitle = ex.altTitle; } // the old page had no shelves
+        m.updatedAt = r.updatedAt; touched = true;
+      }
+      // catalog data only fills what is missing
+      CATALOG_FIELDS.forEach(f => { const empty = !m[f] || (Array.isArray(m[f]) && !m[f].length); if (empty && r[f] && (!Array.isArray(r[f]) || r[f].length)){ m[f] = r[f]; touched = true; } });
+      ["titleAr", "descAr", "altTitle"].forEach(f => { if (!m[f] && r[f]){ m[f] = r[f]; touched = true; } });
+      const al = new Set([...(m.aliases||[]), ...(r.aliases||[])]); if (r.key !== m.key) al.add(r.key); al.delete(m.key);
+      if (al.size !== (m.aliases||[]).length){ m.aliases = [...al]; touched = true; }
+      if (touched){ target = m; updated++; }
+    }
+    if (target){ target.shelves = target.shelves || []; target.genres = target.genres || []; changed.push(target); }
+    const c = covers[r.key]; const k = (target || ex).key;
+    if (c && (!coverUrls.has(k) || r.customCover)){ const b = await (await fetch(c)).blob(); await putCover(k, b); }
+  }
+  await putNovels(changed); await setMeta("lastImport", Date.now()); await loadAll(); render();
+  toast(added || updated ? "أضيفت " + added + " رواية، وتحدّثت " + updated : "لا جديد في الملف، مكتبتك محدّثة");
+}
+
+/* ---------- start ---------- */
+$("#q").addEventListener("input", e => { view.q = e.target.value; render(); });
+$("#sort").addEventListener("change", e => { view.sort = e.target.value; saveView(); render(); });
+$("#filterBtn").onclick = filterSheet;
+$("#menuBtn").onclick = menuSheet;
+$("#addBtn").onclick = () => editSheet(null);
+$("#fileIn").addEventListener("change", e => { const f = e.target.files[0]; e.target.value = ""; if (f) importFile(f); });
+
+(async () => {
+  try { await openDB(); await loadAll(); }
+  catch(e){ $("#list").innerHTML = ""; const x = el("div", "empty"); x.append(el("b", "", "تعذّر فتح التخزين"), el("span", "", "افتح التطبيق في متصفح Chrome عادي، لا في وضع التصفح الخفي.")); $("#list").appendChild(x); return; }
+  render();
+  if (navigator.storage && navigator.storage.persist){ try { const p = await navigator.storage.persist(); meta.persisted = p; } catch(e) {} }
+  if ("serviceWorker" in navigator) navigator.serviceWorker.register("sw.js").catch(() => {});
+})();
