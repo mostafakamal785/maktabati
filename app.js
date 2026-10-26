@@ -4,7 +4,7 @@
 
 const STATUS = {reading:"أقرأ الآن", planned:"أنوي قراءتها", paused:"متوقفة", done:"مكتملة", dropped:"تركتها"};
 const ORDER = ["reading","planned","paused","done","dropped"];
-const PROGRESS_FIELDS = ["title","altTitle","url","chapter","total","status","rating","note","shelves","titleAr","descAr","deleted","customCover"];
+const PROGRESS_FIELDS = ["title","altTitle","url","chapter","total","status","rating","note","shelves","titleAr","descAr","deleted","customCover","links","lastChapterUrl","lastReadAt"];
 const CATALOG_FIELDS = ["desc","genres","author","source"];
 const $ = s => document.querySelector(s);
 const KEY = s => (s||"").toLowerCase().replace(/[^a-z0-9؀-ۿ]/g,"");
@@ -57,7 +57,11 @@ async function save(n, touch = true){
 /* ---------- small helpers ---------- */
 function el(tag, cls, text){ const e = document.createElement(tag); if (cls) e.className = cls; if (text !== undefined) e.textContent = text; return e; }
 function btn(cls, text, fn, label){ const b = el("button", cls, text); b.type = "button"; if (fn) b.onclick = fn; if (label) b.setAttribute("aria-label", label); return b; }
-function toast(t){ const box = $("#toast"); box.innerHTML = ""; box.appendChild(el("span", "", t)); clearTimeout(toast.t); toast.t = setTimeout(() => box.innerHTML = "", 2400); }
+function toast(t, action, fn){
+  const box = $("#toast"); box.innerHTML = ""; const sp = el("span", "", t);
+  if (action){ const b = btn("toast-act", action, () => { box.innerHTML = ""; fn(); }); sp.appendChild(b); }
+  box.appendChild(sp); clearTimeout(toast.t); toast.t = setTimeout(() => box.innerHTML = "", action ? 6000 : 2400);
+}
 function ago(t){
   if (!t) return ""; const d = Math.floor((Date.now() - t) / 86400000);
   if (d <= 0) return "اليوم"; if (d === 1) return "أمس"; if (d < 30) return "قبل " + d + " يوم";
@@ -237,6 +241,7 @@ function render(){
   } else {
     const shown = (view.status === "all" ? base : base.filter(n => n.status === view.status)).sort(SORTS[view.sort] || SORTS.recent);
     if (!shown.length){ const e = el("div", "empty"); e.append(el("b", "", "لا نتائج"), el("span", "", "غيّر البحث أو الحالة أو القائمة.")); list.appendChild(e); }
+    if (!view.q && view.status === "all" && !view.shelves.length && !view.genres.length && !sel) list.appendChild(recentStrip());
     const frag = document.createDocumentFragment(); shown.forEach(n => frag.appendChild(card(n))); list.appendChild(frag);
   }
   if (detailKey) drawDetail();
@@ -255,7 +260,7 @@ function card(n){
   body.appendChild(progress(n));
   const a = el("div", "acts");
   a.append(btn("btn primary plus", "+1 فصل", () => bump(n, 1)), Object.assign(btn("btn minus", "−1", () => bump(n, -1), "تراجع فصل"), {dir: "ltr"}));
-  if (n.url){ const l = el("a", "btn", "فتح"); l.href = n.url; l.target = "_blank"; l.rel = "noopener"; a.appendChild(l); }
+  const go = readLink(n); if (go){ const l = el("a", "btn", n.lastChapterUrl ? "أكمل" : "فتح"); l.href = go; l.target = "_blank"; l.rel = "noopener"; a.appendChild(l); }
   body.appendChild(a);
   const m = el("div", "meta");
   if (n.rating > 0) m.appendChild(el("span", "stars", "★".repeat(n.rating) + "☆".repeat(5 - n.rating)));
@@ -269,6 +274,114 @@ function progress(n){
   num.appendChild(el("small", "", n.total ? "من " + n.total : "فصل")); p.appendChild(num);
   if (n.total > 0){ const b = el("div", "bar"); const i = document.createElement("i"); i.style.width = Math.min(100, Math.round((n.chapter||0) / n.total * 100)) + "%"; b.appendChild(i); p.appendChild(b); }
   return p;
+}
+
+/* ---------- chapter links: share from the browser, paste a link, continue reading ---------- */
+// a novel's id on a reading site, from any of its links: novelbin:<slug>, novelping:<slug>, webnovel:<number>
+function linkId(u){
+  try {
+    const x = new URL(u); const site = x.hostname.replace(/^(www|m)\./, "").split(".")[0];
+    const m = x.pathname.match(/^\/(?:b|book|novel|series|n)\/([^\/?#]+)/i); if (!m) return null;
+    let id = decodeURIComponent(m[1]).toLowerCase(); const num = id.match(/(\d{8,})$/); if (num) id = num[1];
+    return site + ":" + id;
+  } catch(e){ return null; }
+}
+function chapterNum(...parts){
+  for (const raw of parts){
+    if (!raw) continue; let s = String(raw); try { s = decodeURIComponent(s); } catch(e) {}
+    const m = s.match(/chapter[\s\-_:]*(\d{1,5})/i) || s.match(/(?:الفصل|فصل)\s*(\d{1,5})/) || s.match(/\bch(?:ap)?[.\-_ ]?(\d{1,5})\b/i);
+    if (m) return +m[1];
+  }
+  return 0;
+}
+const readLink = n => n.lastChapterUrl || n.url || "";
+function idsOf(n){ return new Set([...(n.links||[]), linkId(n.url), linkId(n.lastChapterUrl)].filter(Boolean)); }
+function matchNovel(url, words){
+  const id = linkId(url);
+  if (id){
+    const hit = lib().find(n => idsOf(n).has(id)); if (hit) return hit;
+    // novelbin and novelping share title-based slugs, so a slug can name the novel on any site
+    const slug = id.split(":")[1];
+    if (!/^\d+$/.test(slug)){
+      const byKey = find(KEY(slug)); if (byKey && !byKey.deleted) return byKey;
+      const bySlug = lib().find(n => [...idsOf(n)].some(x => x.split(":")[1] === slug)); if (bySlug) return bySlug;
+    }
+  }
+  // fall back to the novel's name inside the shared page title
+  const k = KEY(words); if (k.length < 6) return null;
+  let best = null;
+  lib().forEach(n => [n.title, n.altTitle].filter(Boolean).forEach(t => { const tk = KEY(t); if (tk.length >= 6 && k.includes(tk) && (!best || tk.length > best[1])) best = [n, tk.length]; }));
+  return best ? best[0] : null;
+}
+async function applyChapter(n, ch, url){
+  const before = {chapter: n.chapter, status: n.status, lastChapterUrl: n.lastChapterUrl, lastReadAt: n.lastReadAt};
+  n.chapter = ch;
+  if (n.total > 0 && ch >= n.total) n.status = "done"; else if (n.status !== "reading") n.status = "reading";
+  if (url){ n.lastChapterUrl = url; const id = linkId(url); if (id && !(n.links||[]).includes(id)) n.links = [...(n.links||[]), id]; }
+  n.lastReadAt = Date.now(); await save(n);
+  toast("«" + n.title + "» على الفصل " + ch, "تراجع", async () => { Object.assign(n, before); await save(n); toast("أُعيد كما كان"); });
+}
+async function handleLink({url = "", title = "", text = ""}){
+  if (!url){ const m = (text + " " + title).match(/https?:\/\/[^\s]+/); url = m ? m[0] : ""; }
+  const ch = chapterNum(url, title, text); const n = matchNovel(url, title + " " + text);
+  if (n && ch){ await applyChapter(n, ch, url); return; }
+  linkSheet(url, ch, title || text, n);
+}
+// when the link did not identify the novel or the chapter, ask once and remember the link for next time
+function linkSheet(url, ch, title, guess){
+  const f = sheet("تحديث من رابط");
+  if (url){ const u = el("p", "small", url); u.dir = "ltr"; u.style.overflowWrap = "anywhere"; f.appendChild(u); }
+  const chIn = document.createElement("input"); chIn.type = "number"; chIn.min = 0; chIn.inputMode = "numeric"; chIn.value = ch || "";
+  const l1 = el("label", "f", ch ? "رقم الفصل" : "رقم الفصل (لم أجده في الرابط، اكتبه)"); l1.appendChild(chIn); f.appendChild(l1);
+  const q = document.createElement("input"); q.type = "search"; q.placeholder = "ابحث عن الرواية في مكتبتك";
+  q.value = guess ? guess.title : (title || "").replace(/(chapter|ch\.?|الفصل)[\s\S]*$/i, "").replace(/[|\-–—:]+\s*$/, "").trim().slice(0, 60);
+  const l2 = el("label", "f", "أي رواية؟"); l2.appendChild(q); f.appendChild(l2);
+  const box = el("div", "list-opt"); f.appendChild(box);
+  const pick = async n => { const c = parseInt(chIn.value) || 0; if (!c){ chIn.focus(); return; } back(); await applyChapter(n, c, url); };
+  const paint = () => {
+    box.innerHTML = ""; const k = KEY(q.value);
+    const score = n => { if (!k) return 0; const t = KEY(n.title); return Math.max(similar(t, k), t.includes(k) ? 0.95 : 0, k.includes(t) && t.length > 5 ? 0.9 : 0); };
+    lib().map(n => [n, score(n)]).sort((a, b) => b[1] - a[1] || (b[0].lastReadAt||0) - (a[0].lastReadAt||0)).slice(0, 6)
+      .forEach(([n]) => { const b = btn("opt", ""); const t = el("span", "", n.title); t.dir = "auto"; b.append(t, el("span", "", "فصل " + (n.chapter||0))); b.onclick = () => pick(n); box.appendChild(b); });
+    if (q.value.trim()) box.appendChild(btn("btn", "أضفها كرواية جديدة: " + q.value.trim().slice(0, 40), async () => {
+      const c = parseInt(chIn.value) || 0; const t = q.value.trim(); const k2 = KEY(t); if (!k2) return;
+      if (find(k2) && !find(k2).deleted){ pick(find(k2)); return; }
+      const now = Date.now();
+      const n = {key: k2, aliases: [], title: t, altTitle: "", url: "", chapter: 0, total: 0, status: "reading", rating: 0, note: "", shelves: [], genres: [], author: "", desc: "", source: "", createdAt: now, updatedAt: now};
+      back(); await save(n); await applyChapter(n, c, url);
+    }));
+  };
+  q.addEventListener("input", paint); paint();
+}
+function pasteSheet(n){
+  const f = sheet(n ? "تحديث «" + n.title + "» من رابط" : "لصق رابط فصل");
+  f.appendChild(el("p", "small", "الصق رابط الفصل الذي وصلت إليه، وسأقرأ رقم الفصل والرواية منه."));
+  const i = document.createElement("input"); i.type = "url"; i.dir = "ltr"; i.placeholder = "https://…";
+  const l = el("label", "f", "الرابط"); l.appendChild(i); f.appendChild(l);
+  const go = async () => {
+    const u = i.value.trim(); if (!u) return; back();
+    if (n){ const c = chapterNum(u); if (c) await applyChapter(n, c, u); else setTimeout(() => linkSheet(u, 0, "", n), 60); }
+    else setTimeout(() => handleLink({url: u}), 60);
+  };
+  const acts = el("div", "acts");
+  const paste = btn("btn", "لصق", async () => { try { i.value = (await navigator.clipboard.readText()).trim(); if (i.value) go(); } catch(e){ i.focus(); toast("الصق الرابط بنفسك في الخانة"); } });
+  acts.append(paste, btn("btn primary", "تحديث", go)); f.appendChild(acts);
+  i.addEventListener("keydown", e => { if (e.key === "Enter") go(); });
+}
+function recentStrip(){
+  const wrap = el("section", "recent");
+  const items = lib().filter(n => n.lastReadAt && n.status === "reading").sort((a, b) => b.lastReadAt - a.lastReadAt).slice(0, 8);
+  if (!items.length){ wrap.hidden = true; return wrap; }
+  wrap.appendChild(el("p", "section-title", "أكمل من حيث توقفت"));
+  const row = el("div", "recent-row");
+  items.forEach(n => {
+    const go = readLink(n); const a = el(go ? "a" : "button", "recent-item");
+    if (go){ a.href = go; a.target = "_blank"; a.rel = "noopener"; } else { a.type = "button"; a.onclick = () => detail(n.key); }
+    a.appendChild(coverNode(n)); const t = el("span", "recent-title", n.title); t.dir = "auto"; a.appendChild(t);
+    a.appendChild(el("span", "recent-ch", "الفصل " + (n.chapter || 0)));
+    row.appendChild(a);
+  });
+  wrap.appendChild(row); return wrap;
 }
 
 /* ---------- novel page ---------- */
@@ -295,7 +408,9 @@ function drawDetail(){
   w.appendChild(progress(n));
   const a = el("div", "acts");
   a.append(btn("btn primary plus", "+1 فصل", () => bump(n, 1)), Object.assign(btn("btn minus", "−1", () => bump(n, -1), "تراجع فصل"), {dir: "ltr"}));
-  if (n.url){ const l = el("a", "btn", "فتح الرواية"); l.href = n.url; l.target = "_blank"; l.rel = "noopener"; a.appendChild(l); }
+  if (n.lastChapterUrl){ const l = el("a", "btn", "أكمل القراءة"); l.href = n.lastChapterUrl; l.target = "_blank"; l.rel = "noopener"; a.appendChild(l); }
+  if (n.url){ const l = el("a", "btn", "صفحة الرواية"); l.href = n.url; l.target = "_blank"; l.rel = "noopener"; a.appendChild(l); }
+  a.appendChild(btn("btn", "تحديث من رابط", () => pasteSheet(n)));
   w.appendChild(a);
   // quick status change
   const sr = el("div", "grid-opts"); ORDER.forEach(k => { const b = btn("shelf-toggle", STATUS[k], async () => { n.status = k; await save(n); }); b.setAttribute("aria-pressed", n.status === k); sr.appendChild(b); });
@@ -569,6 +684,7 @@ $("#sort").addEventListener("change", e => { view.sort = e.target.value; saveVie
 $("#filterBtn").onclick = filterSheet;
 $("#selectBtn").onclick = () => { if (!sel) startSelect(null); };
 $("#menuBtn").onclick = menuSheet;
+$("#linkBtn").onclick = () => pasteSheet(null);
 $("#addBtn").onclick = () => editSheet(null);
 $("#fileIn").addEventListener("change", e => { const f = e.target.files[0]; e.target.value = ""; if (f) importFile(f); });
 
@@ -578,4 +694,11 @@ $("#fileIn").addEventListener("change", e => { const f = e.target.files[0]; e.ta
   render();
   if (navigator.storage && navigator.storage.persist){ try { const p = await navigator.storage.persist(); meta.persisted = p; } catch(e) {} }
   if ("serviceWorker" in navigator) navigator.serviceWorker.register("sw.js").catch(() => {});
+  // opened from Android's share menu: index.html?title=…&text=…&url=…
+  const sp = new URLSearchParams(location.search);
+  if (sp.has("url") || sp.has("text")){
+    history.replaceState(null, "", location.pathname);
+    if (lib().length) handleLink({url: sp.get("url") || "", title: sp.get("title") || "", text: sp.get("text") || ""});
+    else toast("استورد مكتبتك أولًا، ثم شارك الفصل مرة أخرى");
+  }
 })();
