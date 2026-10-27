@@ -26,7 +26,9 @@
         <button class="icon-btn" id="menuBtn" type="button" aria-label="الإعدادات والمزامنة">☰</button>
       </div>
     </div>
+    <div class="tabs" role="tablist"><button id="tabLib" type="button" aria-pressed="true">مكتبتي</button><button id="tabCat" type="button" aria-pressed="false">الفهرس</button></div>
     <input class="search" id="q" type="search" placeholder="ابحث بالاسم أو الوصف أو النوع أو المؤلف" autocomplete="off">
+    <div id="libControls">
     <div class="chips" id="statusChips" role="group" aria-label="الحالة"></div>
     <div class="chips" id="listChips" role="group" aria-label="القوائم"></div>
     <div class="bar-row">
@@ -39,10 +41,13 @@
           <option value="progress">نسبة التقدم</option>
           <option value="left">الأقرب للنهاية</option>
           <option value="added">الأحدث إضافة</option>
+          <option value="fresh">فيها فصول جديدة</option>
         </select>
       </label>
     </div>
     <div class="active-filters" id="activeFilters" hidden></div>
+    </div>
+    <div id="catControls"></div>
   </header>
   <main class="list" id="list"></main>
 </div>
@@ -52,5 +57,6 @@
 <input type="file" id="fileIn" accept=".json,application/json" hidden>
 <input type="file" id="coverIn" accept="image/*" hidden>
 <script src="app.js"></script>
+<script src="catalog.js"></script>
 </body>
 </html>

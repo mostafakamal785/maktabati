@@ -4,8 +4,8 @@
 
 const STATUS = {reading:"أقرأ الآن", planned:"أنوي قراءتها", paused:"متوقفة", done:"مكتملة", dropped:"تركتها"};
 const ORDER = ["reading","planned","paused","done","dropped"];
-const PROGRESS_FIELDS = ["title","altTitle","url","chapter","total","status","rating","note","shelves","titleAr","descAr","deleted","customCover","links","lastChapterUrl","lastReadAt"];
-const CATALOG_FIELDS = ["desc","genres","author","source"];
+const PROGRESS_FIELDS = ["title","altTitle","url","chapter","total","status","rating","note","shelves","titleAr","descAr","deleted","customCover","links","lastChapterUrl","lastReadAt","seenLatest"];
+const CATALOG_FIELDS = ["desc","genres","author","source","coverUrl"];
 const $ = s => document.querySelector(s);
 const KEY = s => (s||"").toLowerCase().replace(/[^a-z0-9؀-ۿ]/g,"");
 
@@ -76,7 +76,8 @@ function similar(a, b){
 function saveView(){ try { localStorage.setItem("view", JSON.stringify({...view, q:""})); } catch(e) {} }
 function coverNode(n, big){
   const box = el("div", "cover"); const url = coverUrls.get(n.key);
-  if (url){ const im = document.createElement("img"); im.src = url; im.alt = ""; im.loading = "lazy"; box.appendChild(im); }
+  const src = url || n.coverUrl;
+  if (src){ const im = document.createElement("img"); im.src = src; im.alt = ""; im.loading = "lazy"; im.onerror = () => { box.textContent = (n.title || "؟").trim().charAt(0); }; box.appendChild(im); }
   else box.textContent = (n.title || "؟").trim().charAt(0).toUpperCase();
   if (big) box.style.cursor = "default";
   return box;
@@ -184,7 +185,7 @@ async function bump(n, d){
   n.chapter = Math.max(0, (Number(n.chapter) || 0) + d);
   if (d > 0 && n.total > 0 && n.chapter >= n.total) n.status = "done";
   else if (d > 0 && n.status !== "reading" && n.status !== "done") n.status = "reading";
-  n.lastReadAt = Date.now();
+  n.lastReadAt = Date.now(); markSeen(n);
   await save(n);
 }
 
@@ -206,8 +207,10 @@ const SORTS = {
   progress: (a, b) => (b.total ? b.chapter / b.total : -1) - (a.total ? a.chapter / a.total : -1),
   left: (a, b) => (a.total ? a.total - a.chapter : 1e9) - (b.total ? b.total - b.chapter : 1e9),
   added: (a, b) => (b.createdAt||0) - (a.createdAt||0),
+  fresh: (a, b) => newChapters(b) - newChapters(a) || (b.lastReadAt||0) - (a.lastReadAt||0),
 };
 function render(){
+  if (tab === "cat"){ renderCatalog(); if (detailKey) drawDetail(); return; }
   const base = filtered(true);
   const chips = $("#statusChips"); chips.innerHTML = "";
   [["all", "الكل", base.length], ...ORDER.map(k => [k, STATUS[k], base.filter(n => n.status === k).length])].forEach(([k, label, c]) => {
@@ -263,6 +266,8 @@ function card(n){
   const go = readLink(n); if (go){ const l = el("a", "btn", n.lastChapterUrl ? "أكمل" : "فتح"); l.href = go; l.target = "_blank"; l.rel = "noopener"; a.appendChild(l); }
   body.appendChild(a);
   const m = el("div", "meta");
+  const fresh = newChapters(n); if (fresh) m.appendChild(el("span", "new-ch", "+" + fresh + " جديد"));
+  const left = n.status === "reading" ? leftChapters(n) : 0; if (left) m.appendChild(el("span", "", "متبقٍ " + left + " فصل"));
   if (n.rating > 0) m.appendChild(el("span", "stars", "★".repeat(n.rating) + "☆".repeat(5 - n.rating)));
   (n.shelves||[]).slice(0, 3).forEach(s => m.appendChild(el("span", "tag shelf", s)));
   if (n.lastReadAt || n.updatedAt) m.appendChild(el("span", "", "آخر تحديث " + ago(n.lastReadAt || n.updatedAt)));
@@ -318,7 +323,7 @@ async function applyChapter(n, ch, url){
   n.chapter = ch;
   if (n.total > 0 && ch >= n.total) n.status = "done"; else if (n.status !== "reading") n.status = "reading";
   if (url){ n.lastChapterUrl = url; const id = linkId(url); if (id && !(n.links||[]).includes(id)) n.links = [...(n.links||[]), id]; }
-  n.lastReadAt = Date.now(); await save(n);
+  n.lastReadAt = Date.now(); markSeen(n); await save(n);
   toast("«" + n.title + "» على الفصل " + ch, "تراجع", async () => { Object.assign(n, before); await save(n); toast("أُعيد كما كان"); });
 }
 async function handleLink({url = "", title = "", text = ""}){
@@ -679,7 +684,9 @@ async function importFile(file){
 }
 
 /* ---------- start ---------- */
-$("#q").addEventListener("input", e => { view.q = e.target.value; render(); });
+$("#q").addEventListener("input", e => { if (tab === "cat"){ cview.q = e.target.value; cview.shown = 40; renderCatalog(); } else { view.q = e.target.value; render(); } });
+$("#tabLib").onclick = () => setTab("lib");
+$("#tabCat").onclick = () => setTab("cat");
 $("#sort").addEventListener("change", e => { view.sort = e.target.value; saveView(); render(); });
 $("#filterBtn").onclick = filterSheet;
 $("#selectBtn").onclick = () => { if (!sel) startSelect(null); };
@@ -688,10 +695,12 @@ $("#linkBtn").onclick = () => pasteSheet(null);
 $("#addBtn").onclick = () => editSheet(null);
 $("#fileIn").addEventListener("change", e => { const f = e.target.files[0]; e.target.value = ""; if (f) importFile(f); });
 
-(async () => {
+// start after every script (catalog.js too) has run
+document.addEventListener("DOMContentLoaded", async () => {
   try { await openDB(); await loadAll(); }
   catch(e){ $("#list").innerHTML = ""; const x = el("div", "empty"); x.append(el("b", "", "تعذّر فتح التخزين"), el("span", "", "افتح التطبيق في متصفح Chrome عادي، لا في وضع التصفح الخفي.")); $("#list").appendChild(x); return; }
-  render();
+  setTab("lib");
+  loadCatalog().then(() => { if (tab === "lib") render(); });
   if (navigator.storage && navigator.storage.persist){ try { const p = await navigator.storage.persist(); meta.persisted = p; } catch(e) {} }
   if ("serviceWorker" in navigator) navigator.serviceWorker.register("sw.js").catch(() => {});
   // opened from Android's share menu: index.html?title=…&text=…&url=…
@@ -701,4 +710,4 @@ $("#fileIn").addEventListener("change", e => { const f = e.target.files[0]; e.ta
     if (lib().length) handleLink({url: sp.get("url") || "", title: sp.get("title") || "", text: sp.get("text") || ""});
     else toast("استورد مكتبتك أولًا، ثم شارك الفصل مرة أخرى");
   }
-})();
+});

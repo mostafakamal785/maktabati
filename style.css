@@ -145,3 +145,17 @@ body.selecting{padding-bottom:calc(150px + env(safe-area-inset-bottom,0px))}
 .recent-ch{font-size:12px;color:var(--accent);font-weight:600}
 .toast span{pointer-events:auto}
 .toast-act{margin-inline-start:12px;border:0;background:none;color:var(--accent);font-weight:600;cursor:pointer;padding:0}
+
+/* tabs: my library vs the catalog */
+.tabs{display:grid;grid-template-columns:1fr 1fr;border:1px solid var(--line);border-radius:12px;overflow:hidden;background:var(--surface)}
+.tabs button{border:0;background:none;padding:9px;font-size:15px;color:var(--muted);cursor:pointer}
+.tabs button[aria-pressed="true"]{background:var(--accent);color:var(--accent-fg);font-weight:600}
+#libControls,#catControls{display:flex;flex-direction:column;gap:9px}
+body[data-tab="cat"] #libControls,body[data-tab="lib"] #catControls,body[data-tab="cat"] .fab,body[data-tab="cat"] #count{display:none}
+#catControls select{border:1px solid var(--line);background:var(--surface);border-radius:10px;padding:6px 8px;font-size:14px;color:var(--fg)}
+.cat-meta{grid-column:1/-1}
+.btn.more{grid-column:1/-1}
+.new-ch{color:var(--accent-fg);background:var(--accent);border-radius:999px;padding:1px 8px;font-weight:600}
+@media (min-width:900px){#libControls,#catControls,.tabs{flex:1 1 100%}}
+.cat-card .acts{flex-wrap:nowrap}
+.cat-card .acts .btn{flex:1;min-width:0}
