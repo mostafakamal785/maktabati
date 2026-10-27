@@ -263,7 +263,7 @@ function card(n){
   body.appendChild(progress(n));
   const a = el("div", "acts");
   a.append(btn("btn primary plus", "+1 فصل", () => bump(n, 1)), Object.assign(btn("btn minus", "−1", () => bump(n, -1), "تراجع فصل"), {dir: "ltr"}));
-  const go = readLink(n); if (go){ const l = el("a", "btn", n.lastChapterUrl ? "أكمل" : "فتح"); l.href = go; l.target = "_blank"; l.rel = "noopener"; a.appendChild(l); }
+  const go = readLink(n); if (go){ const l = el("a", "btn", n.lastChapterUrl ? "أكمل" : "فتح"); l.href = go; l.target = "_blank"; l.rel = "noopener"; a.appendChild(readingLink(l, n)); }
   body.appendChild(a);
   const m = el("div", "meta");
   const fresh = newChapters(n); if (fresh) m.appendChild(el("span", "new-ch", "+" + fresh + " جديد"));
@@ -300,6 +300,35 @@ function chapterNum(...parts){
   return 0;
 }
 const readLink = n => n.lastChapterUrl || n.url || "";
+// reading happens on another site the app cannot see, so remember what was opened and ask on return
+function readingLink(a, n){
+  a.addEventListener("click", () => { try { localStorage.setItem("away", JSON.stringify({key: n.key, ch: Number(n.chapter) || 0, at: Date.now()})); } catch(e) {} });
+  return a;
+}
+function checkReturn(){
+  let p = null; try { p = JSON.parse(localStorage.getItem("away") || "null"); } catch(e) {}
+  if (!p) return;
+  const gone = Date.now() - p.at; if (gone < 15000) return; // back too soon to have read anything
+  try { localStorage.removeItem("away"); } catch(e) {}
+  const n = find(p.key);
+  // a shared chapter link already moved it, or the trip is too old to remember
+  if (!n || n.deleted || gone > 86400000 || (Number(n.chapter) || 0) !== p.ch) return;
+  returnSheet(n);
+}
+function returnSheet(n){
+  const c = Number(n.chapter) || 0;
+  const f = sheet("إلى أي فصل وصلت؟");
+  const t = el("p", "sub", n.title); t.dir = "auto"; f.append(t, el("p", "small", "كنت على الفصل " + c));
+  const go = async ch => { back(); await applyChapter(n, ch); };
+  const quick = el("div", "acts quick-ch");
+  [1, 2, 3, 4, 5].forEach(d => { const b = btn("btn", "", () => go(c + d), "الفصل " + (c + d)); b.append(Object.assign(el("b", "", "+" + d), {dir: "ltr"}),el("span", "small", String(c + d))); quick.appendChild(b); });
+  f.appendChild(quick);
+  const chIn = document.createElement("input"); chIn.type = "number"; chIn.min = 0; chIn.inputMode = "numeric"; chIn.value = c + 6;
+  const l1 = el("label", "f", "أو اكتب رقم آخر فصل قرأته"); l1.appendChild(chIn); f.appendChild(l1);
+  const acts = el("div", "acts");
+  acts.append(btn("btn primary", "حفظ", () => { const v = parseInt(chIn.value); if (!(v >= 0)){ chIn.focus(); return; } go(v); }), btn("btn", "لم أقرأ", () => back()));
+  f.appendChild(acts);
+}
 function idsOf(n){ return new Set([...(n.links||[]), linkId(n.url), linkId(n.lastChapterUrl)].filter(Boolean)); }
 function matchNovel(url, words){
   const id = linkId(url);
@@ -381,7 +410,7 @@ function recentStrip(){
   const row = el("div", "recent-row");
   items.forEach(n => {
     const go = readLink(n); const a = el(go ? "a" : "button", "recent-item");
-    if (go){ a.href = go; a.target = "_blank"; a.rel = "noopener"; } else { a.type = "button"; a.onclick = () => detail(n.key); }
+    if (go){ a.href = go; a.target = "_blank"; a.rel = "noopener"; readingLink(a, n); } else { a.type = "button"; a.onclick = () => detail(n.key); }
     a.appendChild(coverNode(n)); const t = el("span", "recent-title", n.title); t.dir = "auto"; a.appendChild(t);
     a.appendChild(el("span", "recent-ch", "الفصل " + (n.chapter || 0)));
     row.appendChild(a);
@@ -413,7 +442,7 @@ function drawDetail(){
   w.appendChild(progress(n));
   const a = el("div", "acts");
   a.append(btn("btn primary plus", "+1 فصل", () => bump(n, 1)), Object.assign(btn("btn minus", "−1", () => bump(n, -1), "تراجع فصل"), {dir: "ltr"}));
-  if (n.lastChapterUrl){ const l = el("a", "btn", "أكمل القراءة"); l.href = n.lastChapterUrl; l.target = "_blank"; l.rel = "noopener"; a.appendChild(l); }
+  if (n.lastChapterUrl){ const l = el("a", "btn", "أكمل القراءة"); l.href = n.lastChapterUrl; l.target = "_blank"; l.rel = "noopener"; a.appendChild(readingLink(l, n)); }
   if (n.url){ const l = el("a", "btn", "صفحة الرواية"); l.href = n.url; l.target = "_blank"; l.rel = "noopener"; a.appendChild(l); }
   a.appendChild(btn("btn", "تحديث من رابط", () => pasteSheet(n)));
   w.appendChild(a);
@@ -697,6 +726,8 @@ $("#fileIn").addEventListener("change", e => { const f = e.target.files[0]; e.ta
 
 // start after every script (catalog.js too) has run
 document.addEventListener("DOMContentLoaded", async () => {
+  // a reload can land on an entry left by an open sheet; its stale depth would stop the next sheet from closing
+  if (history.state) history.replaceState(null, "");
   try { await openDB(); await loadAll(); }
   catch(e){ $("#list").innerHTML = ""; const x = el("div", "empty"); x.append(el("b", "", "تعذّر فتح التخزين"), el("span", "", "افتح التطبيق في متصفح Chrome عادي، لا في وضع التصفح الخفي.")); $("#list").appendChild(x); return; }
   setTab("lib");
@@ -707,7 +738,10 @@ document.addEventListener("DOMContentLoaded", async () => {
   const sp = new URLSearchParams(location.search);
   if (sp.has("url") || sp.has("text")){
     history.replaceState(null, "", location.pathname);
+    try { localStorage.removeItem("away"); } catch(e) {}
     if (lib().length) handleLink({url: sp.get("url") || "", title: sp.get("title") || "", text: sp.get("text") || ""});
     else toast("استورد مكتبتك أولًا، ثم شارك الفصل مرة أخرى");
   }
+  checkReturn();
+  document.addEventListener("visibilitychange", () => { if (document.visibilityState === "visible") checkReturn(); });
 });

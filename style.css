@@ -159,3 +159,5 @@ body[data-tab="cat"] #libControls,body[data-tab="lib"] #catControls,body[data-ta
 @media (min-width:900px){#libControls,#catControls,.tabs{flex:1 1 100%}}
 .cat-card .acts{flex-wrap:nowrap}
 .cat-card .acts .btn{flex:1;min-width:0}
+.quick-ch .btn{flex:1;display:flex;flex-direction:column;align-items:center;gap:2px;padding:8px 4px;min-width:0}
+.quick-ch .btn .small{opacity:.7}

@@ -1,5 +1,5 @@
 // Offline support: the app shell is cached on install; fonts are cached the first time they load.
-const VERSION = "maktabati-v4";
+const VERSION = "maktabati-v5";
 const SHELL = ["./", "index.html", "style.css", "app.js", "catalog.js", "manifest.webmanifest", "icons/icon-192.png", "icons/icon-512.png"];
 
 self.addEventListener("install", e => {
