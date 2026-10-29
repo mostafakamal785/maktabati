@@ -276,8 +276,9 @@ function card(n){
 }
 function progress(n){
   const p = el("div", "prog"); const num = el("div", "num", String(n.chapter || 0));
-  num.appendChild(el("small", "", n.total ? "من " + n.total : "فصل")); p.appendChild(num);
-  if (n.total > 0){ const b = el("div", "bar"); const i = document.createElement("i"); i.style.width = Math.min(100, Math.round((n.chapter||0) / n.total * 100)) + "%"; b.appendChild(i); p.appendChild(b); }
+  const total = totalOf(n);
+  num.appendChild(el("small", "", total ? "من " + total : "فصل")); p.appendChild(num);
+  if (total > 0){ const b = el("div", "bar"); const i = document.createElement("i"); i.style.width = Math.min(100, Math.round((n.chapter||0) / total * 100)) + "%"; b.appendChild(i); p.appendChild(b); }
   return p;
 }
 

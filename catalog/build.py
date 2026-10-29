@@ -3,8 +3,8 @@ Only pages that novelping's robots.txt allows are read (/sort/*, /novelping-genr
 Usage: python catalog/build.py [popular_pages] [genre_pages]      (stdlib only, runs on GitHub Actions)"""
 import json, re, sys, time, html, os, urllib.request, datetime
 
-POPULAR_PAGES = int(sys.argv[1]) if len(sys.argv) > 1 else 75   # 20 novels per page
-GENRE_PAGES = int(sys.argv[2]) if len(sys.argv) > 2 else 15
+POPULAR_PAGES = int(sys.argv[1]) if len(sys.argv) > 1 else 2000   # 20 novels per page; stops at the last page (~1333 in 2026)
+GENRE_PAGES = int(sys.argv[2]) if len(sys.argv) > 2 else 400
 BASE = "https://novelping.com"
 UA = "maktabati-catalog/1.0 (personal reading-list app; weekly)"
 OUT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "catalog.json")
@@ -51,11 +51,15 @@ for g in genres:
         rows = parse(page)
         if not rows: break
         for r in rows:
-            if r["slug"] in items: items[r["slug"]]["genres"].add(g)
+            if r["slug"] not in items: items[r["slug"]] = {**r, "genres": set()}; order.append(r["slug"])
+            items[r["slug"]]["genres"].add(g)
     print("genre", g, flush=True)
 
-if len(items) < 100:  # the site was down or changed its pages: keep last week's catalog
-    sys.exit("only %d novels read, catalog not written" % len(items))
+# the site was down or changed its pages: keep last week's catalog rather than shrink it
+try: before = len(json.load(open(OUT, encoding="utf-8"))["items"])
+except Exception: before = 0
+if len(items) < max(100, before * 0.8):
+    sys.exit("only %d novels read (last catalog had %d), catalog not written" % (len(items), before))
 used = sorted({g for it in items.values() for g in it["genres"]})
 gidx = {g: i for i, g in enumerate(used)}
 data = {

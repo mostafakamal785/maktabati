@@ -11,8 +11,8 @@ const npUrl = slug => "https://novelping.com/book/" + slug;
 
 function indexCatalog(d){
   CAT = d; catBy = {slug: new Map(), key: new Map()};
-  d.items.forEach((r, i) => { const it = {slug: r[0], title: r[1], author: r[2], latest: r[3], full: !!r[4], genres: r[5].map(g => d.genres[g]), rank: i};
-    catBy.slug.set(it.slug, it); catBy.key.set(KEY(it.title), it); });
+  d.items.forEach((r, i) => { const it = {slug: r[0], title: r[1], author: r[2], latest: r[3], full: !!r[4], genres: r[5].map(g => d.genres[g]), rank: i, key: KEY(r[1]), akey: KEY(r[2])};
+    catBy.slug.set(it.slug, it); if (!catBy.key.has(it.key)) catBy.key.set(it.key, it); });
 }
 // a library novel's catalog entry: by its saved links, its slug, or its name
 function catFor(n){
@@ -20,9 +20,16 @@ function catFor(n){
   for (const id of idsOf(n)){ const [site, slug] = id.split(":"); if (!/^\d+$/.test(slug) && catBy.slug.has(slug)) return catBy.slug.get(slug); }
   return catBy.key.get(n.key) || (n.aliases||[]).map(a => catBy.key.get(a)).find(Boolean) || (n.altTitle && catBy.key.get(KEY(n.altTitle))) || null;
 }
-function inLibrary(it){
-  return lib().find(n => n.key === KEY(it.title) || (n.aliases||[]).includes(KEY(it.title)) || idsOf(n).has("novelping:" + it.slug)) || null;
+// the full catalog has ~27k novels, so look them up in a map of the library built once per render
+let mineIdx = null;
+function buildMine(){
+  const m = new Map();
+  lib().forEach(n => { m.set(n.key, n); (n.aliases||[]).forEach(a => m.set(a, n)); idsOf(n).forEach(id => { if (id.indexOf("novelping:") === 0) m.set("np:" + id.slice(10), n); }); });
+  return m;
 }
+function inLibrary(it){ const m = mineIdx || buildMine(); return m.get(it.key) || m.get("np:" + it.slug) || null; }
+// what to show as the novel's length: the saved total, or the site's newest chapter when that is higher
+function totalOf(n){ const c = catFor(n); return Math.max(Number(n.total) || 0, c ? c.latest : 0); }
 // released since you last moved this novel: seenLatest is the site's last chapter at that moment
 const newChapters = n => { const c = catFor(n); return c && n.status === "reading" && n.seenLatest != null && c.latest > n.seenLatest ? c.latest - n.seenLatest : 0; };
 const leftChapters = n => { const c = catFor(n); return c && c.latest > (n.chapter||0) ? c.latest - (n.chapter||0) : 0; };
@@ -73,17 +80,18 @@ function renderCatalog(){
   const l1 = el("label", "sort"); l1.appendChild(st); const l2 = el("label", "sort"); l2.appendChild(so);
   row.append(hm, el("span", "bar-left"), l1, l2); row.children[1].remove(); box.appendChild(row);
 
-  const q = KEY(cview.q);
+  const q = KEY(cview.q); mineIdx = buildMine();
   let items = CAT.items.map(r => catBy.slug.get(r[0])).filter(it =>
     (!cview.genres.length || cview.genres.every(g => it.genres.includes(g))) &&
     (cview.state === "all" || (cview.state === "full") === it.full) &&
-    (!q || KEY(it.title).includes(q) || KEY(it.author).includes(q)));
+    (!q || it.key.includes(q) || it.akey.includes(q)));
   if (cview.hideMine) items = items.filter(it => !inLibrary(it));
   if (cview.sort === "chapters") items.sort((a, b) => b.latest - a.latest); else if (cview.sort === "name") items.sort((a, b) => a.title.localeCompare(b.title));
   list.appendChild(el("p", "small cat-meta", items.length.toLocaleString("ar") + " رواية · الفهرس من novelping.com · آخر تحديث " + CAT.updatedAt.slice(0, 10)));
-  if (!items.length){ const e = el("div", "empty"); e.append(el("b", "", "لا نتائج"), el("span", "", "غيّر البحث أو الأنواع.")); list.appendChild(e); return; }
+  if (!items.length){ const e = el("div", "empty"); e.append(el("b", "", "لا نتائج"), el("span", "", "غيّر البحث أو الأنواع.")); list.appendChild(e); mineIdx = null; return; }
   const frag = document.createDocumentFragment(); items.slice(0, cview.shown).forEach(it => frag.appendChild(catCard(it))); list.appendChild(frag);
   if (items.length > cview.shown) list.appendChild(btn("btn more", "عرض المزيد (" + (items.length - cview.shown) + ")", () => { cview.shown += 60; renderCatalog(); }));
+  mineIdx = null;
 }
 function catCard(it){
   const c = el("article", "card cat-card");
