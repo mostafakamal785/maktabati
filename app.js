@@ -83,6 +83,13 @@ function coverNode(n, big){
   if (big) box.style.cursor = "default";
   return box;
 }
+// a cover shown full screen; tap anywhere or press back to close
+function zoomCover(src){
+  if (!src) return;
+  const z = el("div", "zoom"); z.setAttribute("role", "dialog"); z.setAttribute("aria-label", "الغلاف مكبّرًا");
+  const im = document.createElement("img"); im.src = src; im.alt = ""; z.appendChild(im);
+  z.onclick = back; pushLayer(z);
+}
 function allShelves(){ const s = new Set(meta.shelves || []); lib().forEach(n => (n.shelves||[]).forEach(x => s.add(x))); return [...s].sort((a, b) => a.localeCompare(b, "ar")); }
 function allGenres(){ const s = new Map(); lib().forEach(n => (n.genres||[]).forEach(g => s.set(g, (s.get(g)||0) + 1))); return [...s].sort((a, b) => b[1] - a[1]); }
 
@@ -504,7 +511,10 @@ function drawDetail(){
   if (!page) return; if (!n || n.deleted){ back(); return; }
   const keep = page.scrollTop; page.innerHTML = ""; const w = el("div", "inner"); page.appendChild(w);
   const top = el("div", "p-top"); top.append(btn("btn", "رجوع", back), btn("btn", "تعديل", () => editSheet(n))); w.appendChild(top);
-  const head = el("div", "p-head"); head.appendChild(coverNode(n, true));
+  const head = el("div", "p-head"); const pc = coverNode(n, true); head.appendChild(pc);
+  // the catalog's large cover when the novel is linked, else the one we have
+  const big = catFor(n) ? npCoverBig(catFor(n).slug) : (coverUrls.get(n.key) || n.coverUrl);
+  if (big || pc.querySelector("img")){ pc.style.cursor = "zoom-in"; pc.onclick = () => zoomCover(big || pc.querySelector("img").src); }
   const ht = el("div", "body");
   const t = el("h2", "p-title", n.title); t.dir = "auto"; ht.appendChild(t);
   if (n.altTitle){ const s = el("p", "sub", n.altTitle); s.dir = "auto"; ht.appendChild(s); }

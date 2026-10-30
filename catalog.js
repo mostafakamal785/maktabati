@@ -196,6 +196,7 @@ function drawCatDetail(page, it){
   const head = el("div", "p-head");
   const cv = el("div", "cover"); const im = document.createElement("img"); im.alt = ""; im.src = npCoverBig(it.slug);
   im.onerror = () => { if (!im.dataset.small){ im.dataset.small = 1; im.src = npCover(it.slug); } else cv.textContent = it.title.charAt(0); }; cv.appendChild(im);
+  cv.style.cursor = "zoom-in"; cv.onclick = () => { if (im.isConnected) zoomCover(im.src); };
   const ht = el("div", "body");
   const t = el("h2", "p-title", it.title); t.dir = "auto"; ht.appendChild(t);
   if (it.author) ht.appendChild(el("p", "sub", "المؤلف: " + it.author));
