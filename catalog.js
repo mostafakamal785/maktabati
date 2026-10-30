@@ -8,6 +8,7 @@ try { Object.assign(cview, JSON.parse(localStorage.getItem("cview") || "{}"), {q
 const saveCview = () => { try { localStorage.setItem("cview", JSON.stringify({...cview, q: ""})); } catch(e) {} };
 const npCover = slug => "https://images.novelping.com/novel_200_89/" + slug + ".jpg";
 const npUrl = slug => "https://novelping.com/book/" + slug;
+const npCoverBig = slug => "https://images.novelping.com/novel/" + slug + ".jpg";
 
 // novelping writes "Super Gene Ⅱ" with one Roman-numeral character; your library has "Super Gene II"
 const ROMAN = ["", "i", "ii", "iii", "iv", "v", "vi", "vii", "viii", "ix", "x", "xi", "xii"];
@@ -172,9 +173,9 @@ function renderCatalog(){
 }
 function catCard(it){
   const c = el("article", "card cat-card");
-  const cv = el("div", "cover"); const im = document.createElement("img"); im.src = npCover(it.slug); im.alt = ""; im.loading = "lazy"; im.onerror = () => { cv.textContent = it.title.charAt(0); }; cv.appendChild(im);
+  const cv = btn("cover", "", () => catDetail(it), "تفاصيل " + it.title); const im = document.createElement("img"); im.src = npCover(it.slug); im.alt = ""; im.loading = "lazy"; im.onerror = () => { cv.textContent = it.title.charAt(0); }; cv.appendChild(im);
   const body = el("div", "body");
-  const t = el("h3", "title", it.title); t.dir = "auto"; body.appendChild(t);
+  const open = btn("open", "", () => catDetail(it)); const t = el("h3", "title", it.title); t.dir = "auto"; open.appendChild(t); body.appendChild(open);
   if (it.author) body.appendChild(el("p", "sub", it.author));
   body.appendChild(el("p", "sub", (it.latest ? "آخر فصل " + it.latest.toLocaleString("ar") + " · " : "") + (it.full ? "مكتملة" : "مستمرة")));
   if (it.genres.length){ const tg = el("div", "tags"); it.genres.slice(0, 4).forEach(g => tg.appendChild(el("span", "tag", g))); body.appendChild(tg); }
@@ -184,7 +185,33 @@ function catCard(it){
   const l = el("a", "btn", "صفحتها"); l.href = npUrl(it.slug); l.target = "_blank"; l.rel = "noopener"; a.appendChild(l);
   body.appendChild(a); c.append(cv, body); return c;
 }
-function addFromCatalog(it){
+/* ---------- a catalog novel's own page: what the browse pages tell, no description ---------- */
+function catDetail(it){
+  const page = el("div", "page"); page.setAttribute("role", "dialog"); page.setAttribute("aria-modal", "true");
+  pushLayer(page); drawCatDetail(page, it);
+}
+function drawCatDetail(page, it){
+  page.innerHTML = ""; const w = el("div", "inner"); page.appendChild(w);
+  const top = el("div", "p-top"); top.appendChild(btn("btn", "رجوع", back)); w.appendChild(top);
+  const head = el("div", "p-head");
+  const cv = el("div", "cover"); const im = document.createElement("img"); im.alt = ""; im.src = npCoverBig(it.slug);
+  im.onerror = () => { if (!im.dataset.small){ im.dataset.small = 1; im.src = npCover(it.slug); } else cv.textContent = it.title.charAt(0); }; cv.appendChild(im);
+  const ht = el("div", "body");
+  const t = el("h2", "p-title", it.title); t.dir = "auto"; ht.appendChild(t);
+  if (it.author) ht.appendChild(el("p", "sub", "المؤلف: " + it.author));
+  if (it.genres.length){ const tg = el("div", "tags"); it.genres.forEach(g => tg.appendChild(el("span", "tag", g))); ht.appendChild(tg); }
+  ht.appendChild(el("p", "sub", (it.latest ? "آخر فصل " + it.latest.toLocaleString("ar") + " · " : "") + (it.full ? "مكتملة" : "مستمرة")));
+  ht.appendChild(el("p", "small", "رقم " + (it.rank + 1).toLocaleString("ar") + " في الأكثر قراءة على novelping"));
+  head.append(cv, ht); w.appendChild(head);
+  const a = el("div", "acts"); const mine = inLibrary(it);
+  if (mine) a.appendChild(btn("btn", "في مكتبتك ✓ افتحها", () => { back(); setTimeout(() => { setTab("lib"); detail(mine.key); }, 80); }));
+  else a.appendChild(btn("btn primary", "+ أضف إلى مكتبتي", () => addFromCatalog(it, () => drawCatDetail(page, it))));
+  const l = el("a", "btn", "صفحتها في الموقع"); l.href = npUrl(it.slug); l.target = "_blank"; l.rel = "noopener";
+  const g = el("a", "btn", "ابحث عنها في Google"); g.href = "https://www.google.com/search?q=" + encodeURIComponent(it.title + " novel"); g.target = "_blank"; g.rel = "noopener";
+  a.append(l, g); w.appendChild(a);
+  w.appendChild(el("p", "small", "الوصف غير متاح هنا، لأن novelping لا يسمح للأدوات الآلية بقراءة صفحات الروايات. تجده في «صفحتها في الموقع»."));
+}
+function addFromCatalog(it, done){
   const f = sheet(it.title); f.querySelector("h2").dir = "auto";
   f.appendChild(el("p", "section-title", "أضفها بحالة"));
   let lists = []; const sg = el("div", "status-grid");
@@ -192,7 +219,7 @@ function addFromCatalog(it){
     const now = Date.now(); const key = KEY(it.title);
     const n = {key, aliases: [], title: it.title, altTitle: "", url: npUrl(it.slug), chapter: 0, total: it.full ? it.latest : 0, status: k, rating: 0, note: "",
       shelves: lists, genres: it.genres, author: it.author, desc: "", source: "novelping", coverUrl: npCover(it.slug), links: ["novelping:" + it.slug], createdAt: now, updatedAt: now};
-    back(); await save(n); toast("أُضيفت إلى مكتبتك: " + it.title); if (tab === "cat") renderCatalog();
+    back(); await save(n); toast("أُضيفت إلى مكتبتك: " + it.title); if (tab === "cat") renderCatalog(); if (done) done();
   })));
   f.appendChild(sg);
   if (allShelves().length){
