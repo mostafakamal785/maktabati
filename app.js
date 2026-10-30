@@ -4,7 +4,7 @@
 
 const STATUS = {reading:"أقرأ الآن", planned:"أنوي قراءتها", paused:"متوقفة", done:"مكتملة", dropped:"تركتها"};
 const ORDER = ["reading","planned","paused","done","dropped"];
-const PROGRESS_FIELDS = ["title","altTitle","url","chapter","total","status","rating","note","shelves","titleAr","descAr","deleted","customCover","links","lastChapterUrl","lastReadAt","seenLatest"];
+const PROGRESS_FIELDS = ["title","altTitle","url","chapter","total","status","rating","note","shelves","titleAr","descAr","deleted","customCover","links","lastChapterUrl","lastReadAt","seenLatest","catSlug","seenFull","queue"];
 const CATALOG_FIELDS = ["desc","genres","author","source","coverUrl"];
 const $ = s => document.querySelector(s);
 const KEY = s => (s||"").toLowerCase().replace(/[^a-z0-9؀-ۿ]/g,"");
@@ -48,6 +48,7 @@ const lib = () => all.filter(n => !n.deleted);
 const find = k => k ? all.find(n => n.key === k || (n.aliases||[]).includes(k)) : null;
 
 async function save(n, touch = true){
+  if (n.queue && (n.status === "done" || n.status === "dropped")) n.queue = null; // finished or left: nothing to read next
   if (touch) n.updatedAt = Date.now();
   await putNovels([n]);
   const i = all.findIndex(x => x.key === n.key); if (i >= 0) all[i] = n; else all.push(n);
@@ -108,6 +109,7 @@ function quickSheet(n){
     allShelves().forEach(s => { const on = (n.shelves||[]).includes(s); const b = btn("shelf-toggle", s, async () => { n.shelves = on ? n.shelves.filter(x => x !== s) : [...(n.shelves||[]), s]; await save(n); paint(); }); b.setAttribute("aria-pressed", on); lg.appendChild(b); });
     lg.appendChild(btn("shelf-toggle", "+ قائمة جديدة", () => newShelfSheet(n, paint))); };
   paint(); f.appendChild(lg);
+  if (n.status !== "done" && n.status !== "dropped"){ f.appendChild(el("p", "section-title", "التالي في القراءة")); const qa = el("div", "acts"); qa.append(...queueButtons(n, () => back())); f.appendChild(qa); }
   const acts = el("div", "acts"); acts.append(btn("btn", "صفحة الرواية", () => { back(); setTimeout(() => detail(n.key), 60); }), btn("btn", "تعديل", () => { back(); setTimeout(() => editSheet(n), 60); }));
   f.appendChild(acts);
 }
@@ -181,11 +183,17 @@ function sheet(title){
 }
 
 /* ---------- progress ---------- */
+// chapters read per day, kept on this device only, for the stats sheet
+async function logRead(d){
+  if (!d) return; const day = new Date().toLocaleDateString("en-CA"); const log = Object.assign({}, meta.readLog);
+  log[day] = Math.max(0, (log[day] || 0) + d); await setMeta("readLog", log);
+}
 async function bump(n, d){
-  n.chapter = Math.max(0, (Number(n.chapter) || 0) + d);
+  const was = Number(n.chapter) || 0;
+  n.chapter = Math.max(0, was + d); logRead(n.chapter - was);
   if (d > 0 && n.total > 0 && n.chapter >= n.total) n.status = "done";
   else if (d > 0 && n.status !== "reading" && n.status !== "done") n.status = "reading";
-  n.lastReadAt = Date.now(); markSeen(n);
+  n.lastReadAt = Date.now(); markSeen(n); if (d > 0) n.queue = null;
   await save(n);
 }
 
@@ -244,10 +252,45 @@ function render(){
   } else {
     const shown = (view.status === "all" ? base : base.filter(n => n.status === view.status)).sort(SORTS[view.sort] || SORTS.recent);
     if (!shown.length){ const e = el("div", "empty"); e.append(el("b", "", "لا نتائج"), el("span", "", "غيّر البحث أو الحالة أو القائمة.")); list.appendChild(e); }
-    if (!view.q && view.status === "all" && !view.shelves.length && !view.genres.length && !sel) list.appendChild(recentStrip());
+    if (!view.q && view.status === "all" && !view.shelves.length && !view.genres.length && !sel) list.append(noticesStrip(), recentStrip(), queueStrip());
     const frag = document.createDocumentFragment(); shown.forEach(n => frag.appendChild(card(n))); list.appendChild(frag);
   }
   if (detailKey) drawDetail();
+}
+/* ---------- notices at the top of the library; each stays until you act on it or close it ---------- */
+const iso = t => "\u2068" + t + "\u2069"; // keeps an English name from flipping the Arabic sentence around it
+function notice(text, actLabel, act, onClose){
+  const b = el("div", "notice"); const t = el("span", "", text); t.dir = "auto"; b.appendChild(t);
+  const acts = el("div", "acts"); if (actLabel) acts.appendChild(btn("btn primary", actLabel, act));
+  acts.appendChild(btn("btn", "إخفاء", onClose)); b.appendChild(acts);
+  return b;
+}
+function noticesStrip(){
+  const w = el("div", "notices");
+  // new chapters: shown again only when the set of releases changes
+  const fresh = lib().filter(n => newChapters(n) > 0);
+  if (fresh.length){
+    const sig = fresh.map(n => n.key + ":" + catFor(n).latest).sort().join("|");
+    if (meta.freshSig !== sig) w.appendChild(notice(fresh.length === 1 ? "نزلت فصول جديدة في «" + iso(fresh[0].title) + "»" : "نزلت فصول جديدة في " + (fresh.length === 2 ? "روايتين تقرؤهما" : fresh.length + (fresh.length <= 10 ? " روايات" : " رواية") + " تقرؤها"), "اعرضها",
+      async () => { await setMeta("freshSig", sig); view.status = "reading"; view.sort = "fresh"; saveView(); render(); window.scrollTo(0, 0); },
+      async () => { await setMeta("freshSig", sig); render(); }));
+  }
+  // a novel you follow was finished on the site since the catalog first saw it
+  const done = lib().filter(n => n.seenFull === false && ["reading", "planned", "paused"].includes(n.status) && (catFor(n) || {}).full);
+  if (done.length){
+    const seen = async () => { done.forEach(n => n.seenFull = true); await putNovels(done); render(); };
+    w.appendChild(notice(done.length === 1 ? "اكتملت «" + iso(done[0].title) + "» في الموقع" : "اكتملت في الموقع " + (done.length === 2 ? "روايتان" : done.length + (done.length <= 10 ? " روايات" : " رواية")) + " من رواياتك: " + done.slice(0, 3).map(n => iso(n.title)).join("، ") + (done.length > 3 ? "…" : ""),
+      "اعرضها", async () => { const k = done[0].key; await seen(); if (done.length === 1){ detail(k); return; }
+        const f = sheet("روايات اكتملت في الموقع"); const box = el("div", "list-opt"); f.appendChild(box);
+        done.forEach(n => { const o = btn("opt", ""); const t = el("span", "", n.title); t.dir = "auto"; o.append(t, el("span", "", (catFor(n).latest || "") + " فصل")); o.onclick = () => { back(); setTimeout(() => detail(n.key), 80); }; box.appendChild(o); }); }, seen));
+  }
+  // backup reminder: the library lives only on this device
+  const since = meta.lastExport || meta.firstSeen, gap = since ? Math.floor((Date.now() - since) / 86400000) : 0;
+  if (lib().length && gap >= 7 && !(meta.backupSnooze > Date.now()))
+    w.appendChild(notice((meta.lastExport ? "مرّ " + gap + (gap <= 10 ? " أيام" : " يومًا") + " على آخر نسخة احتياطية." : "لم تحفظ نسخة احتياطية بعد.") + " مكتبتك محفوظة في هذا الجهاز فقط.", "صدّر الآن",
+      async () => { await setMeta("backupSnooze", Date.now() + 86400000); exportSync(); render(); },
+      async () => { await setMeta("backupSnooze", Date.now() + 3 * 86400000); render(); }));
+  return w;
 }
 function card(n){
   const c = el("article", "card"); c.dataset.key = n.key;
@@ -349,12 +392,13 @@ function matchNovel(url, words){
   return best ? best[0] : null;
 }
 async function applyChapter(n, ch, url){
-  const before = {chapter: n.chapter, status: n.status, lastChapterUrl: n.lastChapterUrl, lastReadAt: n.lastReadAt};
+  const before = {chapter: n.chapter, status: n.status, lastChapterUrl: n.lastChapterUrl, lastReadAt: n.lastReadAt, queue: n.queue};
   n.chapter = ch;
   if (n.total > 0 && ch >= n.total) n.status = "done"; else if (n.status !== "reading") n.status = "reading";
   if (url){ n.lastChapterUrl = url; const id = linkId(url); if (id && !(n.links||[]).includes(id)) n.links = [...(n.links||[]), id]; }
-  n.lastReadAt = Date.now(); markSeen(n); await save(n);
-  toast("«" + n.title + "» على الفصل " + ch, "تراجع", async () => { Object.assign(n, before); await save(n); toast("أُعيد كما كان"); });
+  n.lastReadAt = Date.now(); markSeen(n); n.queue = null; await save(n);
+  const read = ch - (Number(before.chapter) || 0); logRead(read);
+  toast("«" + n.title + "» على الفصل " + ch, "تراجع", async () => { Object.assign(n, before); logRead(-read); await save(n); toast("أُعيد كما كان"); });
 }
 async function handleLink({url = "", title = "", text = ""}){
   if (!url){ const m = (text + " " + title).match(/https?:\/\/[^\s]+/); url = m ? m[0] : ""; }
@@ -419,6 +463,36 @@ function recentStrip(){
   wrap.appendChild(row); return wrap;
 }
 
+/* ---------- «التالي»: the novels you mean to read next, in order ---------- */
+const queued = () => lib().filter(n => n.queue).sort((a, b) => a.queue - b.queue);
+async function setQueue(n, mode){
+  const q = queued().filter(x => x !== n);
+  n.queue = mode === "off" ? null : mode === "first" ? (q.length ? q[0].queue - 1 : Date.now()) : Date.now();
+  await save(n);
+  toast(mode === "off" ? "أُزيلت من «التالي»" : mode === "first" ? "صارت الأولى في «التالي»" : "أُضيفت إلى «التالي»");
+}
+function queueStrip(){
+  const wrap = el("section", "recent queue"); const items = queued();
+  if (!items.length){ wrap.hidden = true; return wrap; }
+  wrap.appendChild(el("p", "section-title", "التالي في القراءة (" + items.length + ")"));
+  const row = el("div", "recent-row");
+  items.forEach((n, i) => {
+    const a = btn("recent-item", "", () => detail(n.key)); a.appendChild(coverNode(n));
+    const t = el("span", "recent-title", n.title); t.dir = "auto"; a.appendChild(t);
+    a.appendChild(el("span", "recent-ch", (i + 1) + " · " + (STATUS[n.status] || ""))); row.appendChild(a);
+  });
+  wrap.appendChild(row); return wrap;
+}
+// the buttons that add, move or remove a novel, for its page and the quick sheet
+function queueButtons(n, after){
+  const done = fn => async () => { await fn(); if (after) after(); };
+  if (!n.queue) return [btn("btn", "+ أضف إلى «التالي»", done(() => setQueue(n, "add")))];
+  const pos = queued().indexOf(n) + 1; const out = [];
+  if (pos > 1) out.push(btn("btn", "اجعلها الأولى", done(() => setQueue(n, "first"))));
+  out.push(btn("btn", "أزلها من «التالي» (رقم " + pos + ")", done(() => setQueue(n, "off"))));
+  return out;
+}
+
 /* ---------- novel page ---------- */
 let showAr = {}, trBusy = {};
 function detail(k){
@@ -447,6 +521,8 @@ function drawDetail(){
   if (n.url){ const l = el("a", "btn", "صفحة الرواية"); l.href = n.url; l.target = "_blank"; l.rel = "noopener"; a.appendChild(l); }
   a.appendChild(btn("btn", "تحديث من رابط", () => pasteSheet(n)));
   w.appendChild(a);
+  if (n.status !== "done" && n.status !== "dropped"){ const qa = el("div", "acts"); qa.append(...queueButtons(n)); w.appendChild(qa); }
+  w.appendChild(catSection(n));
   // quick status change
   const sr = el("div", "grid-opts"); ORDER.forEach(k => { const b = btn("shelf-toggle", STATUS[k], async () => { n.status = k; await save(n); }); b.setAttribute("aria-pressed", n.status === k); sr.appendChild(b); });
   w.append(el("p", "h3", "الحالة"), sr);
@@ -604,8 +680,33 @@ function menuSheet(){
     + (meta.lastExport ? " آخر تصدير: " + ago(meta.lastExport) + "." : "")));
   const a1 = el("div", "acts"); a1.append(btn("btn primary", "تصدير ملف المزامنة", () => { back(); exportSync(); }), btn("btn", "استيراد ملف", () => { back(); $("#fileIn").click(); })); f.appendChild(a1);
   f.appendChild(el("p", "section-title", "إضافة وتنظيم"));
-  const a2 = el("div", "acts"); a2.append(btn("btn", "إضافة عدة روايات", () => { back(); setTimeout(bulkSheet, 50); }), btn("btn", "إدارة القوائم", () => { back(); setTimeout(shelvesSheet, 50); })); f.appendChild(a2);
+  const a2 = el("div", "acts"); a2.append(btn("btn", "إضافة عدة روايات", () => { back(); setTimeout(bulkSheet, 50); }), btn("btn", "إدارة القوائم", () => { back(); setTimeout(shelvesSheet, 50); }));
+  a2.appendChild(btn("btn", "الإحصاءات", () => { back(); setTimeout(statsSheet, 50); }));
+  if (CAT){ const u = lib().filter(n => !catFor(n) && n.catSlug !== "-").length; if (u) a2.appendChild(btn("btn", "ربط بالفهرس (" + u + ")", () => { back(); setTimeout(unlinkedSheet, 50); })); }
+  f.appendChild(a2);
   f.appendChild(el("p", "small", "البيانات محفوظة في هذا الجهاز فقط" + (meta.persisted ? "، والمتصفح لن يمسحها تلقائيًا." : ". صدّر ملفًا من وقت لآخر كنسخة احتياطية.")));
+}
+function statsSheet(){
+  const f = sheet("الإحصاءات"); const L = lib(); const log = meta.readLog || {};
+  const dayKey = t => new Date(t).toLocaleDateString("en-CA");
+  const sumDays = n => { let s = 0; for (let i = 0; i < n; i++) s += log[dayKey(Date.now() - i * 86400000)] || 0; return s; };
+  const days = Object.keys(log).filter(k => log[k] > 0).sort();
+  const tiles = el("div", "stat-tiles");
+  const tile = (v, t) => { const d = el("div", "stat"); d.append(el("b", "", Number(v).toLocaleString("ar")), el("span", "", t)); tiles.appendChild(d); };
+  tile(sumDays(1), "فصل اليوم"); tile(sumDays(7), "فصل في 7 أيام"); tile(sumDays(30), "فصل في 30 يومًا");
+  tile(L.reduce((s, n) => s + (Number(n.chapter) || 0), 0), "فصل مقروء في المكتبة"); tile(L.filter(n => n.status === "done").length, "رواية أنهيتها"); tile(L.filter(n => n.status === "reading").length, "أقرؤها الآن");
+  f.appendChild(tiles);
+  // the last 14 days as bars
+  f.appendChild(el("p", "section-title", "آخر 14 يومًا"));
+  const vals = []; for (let i = 13; i >= 0; i--){ const k = dayKey(Date.now() - i * 86400000); vals.push([k, log[k] || 0]); }
+  const max = Math.max(1, ...vals.map(v => v[1])); const bars = el("div", "stat-bars");
+  vals.forEach(([k, v]) => { const c = el("div", "sb"); const i = document.createElement("i"); i.style.height = Math.round(v / max * 100) + "%"; c.title = k + ": " + v; c.append(el("span", "", v ? String(v) : ""), i, el("small", "", k.slice(8))); bars.appendChild(c); });
+  f.appendChild(bars);
+  f.appendChild(el("p", "small", days.length ? "يُحسب ما تقرؤه منذ " + days[0] + "، في هذا الجهاز فقط." : "يبدأ العدّ من أول فصل تسجّله بعد هذا التحديث، في هذا الجهاز فقط."));
+  // genres you read most, from your reading and finished novels
+  const g = new Map(); L.filter(n => n.status === "reading" || n.status === "done").forEach(n => { const c = catFor(n); new Set([...(n.genres||[]), ...(c ? c.genres : [])].map(x => x.trim())).forEach(x => g.set(x, (g.get(x) || 0) + 1)); });
+  const top = [...g].sort((a, b) => b[1] - a[1]).slice(0, 6);
+  if (top.length){ f.appendChild(el("p", "section-title", "أكثر الأنواع في قراءتك")); const tg = el("div", "tags"); top.forEach(([x, c]) => tg.appendChild(el("span", "tag", x + " " + c))); f.appendChild(tg); }
 }
 function bulkSheet(){
   const f = sheet("إضافة عدة روايات");
@@ -729,7 +830,7 @@ $("#fileIn").addEventListener("change", e => { const f = e.target.files[0]; e.ta
 document.addEventListener("DOMContentLoaded", async () => {
   // a reload can land on an entry left by an open sheet; its stale depth would stop the next sheet from closing
   if (history.state) history.replaceState(null, "");
-  try { await openDB(); await loadAll(); }
+  try { await openDB(); await loadAll(); if (!meta.firstSeen) await setMeta("firstSeen", Date.now()); }
   catch(e){ $("#list").innerHTML = ""; const x = el("div", "empty"); x.append(el("b", "", "تعذّر فتح التخزين"), el("span", "", "افتح التطبيق في متصفح Chrome عادي، لا في وضع التصفح الخفي.")); $("#list").appendChild(x); return; }
   setTab("lib");
   loadCatalog().then(() => { if (tab === "lib") render(); });
