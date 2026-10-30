@@ -9,9 +9,12 @@ const saveCview = () => { try { localStorage.setItem("cview", JSON.stringify({..
 const npCover = slug => "https://images.novelping.com/novel_200_89/" + slug + ".jpg";
 const npUrl = slug => "https://novelping.com/book/" + slug;
 
+// novelping writes "Super Gene Ⅱ" with one Roman-numeral character; your library has "Super Gene II"
+const ROMAN = ["", "i", "ii", "iii", "iv", "v", "vi", "vii", "viii", "ix", "x", "xi", "xii"];
+const roman = t => (t || "").replace(/[\u2160-\u216B]/g, c => " " + ROMAN[c.charCodeAt(0) - 0x215F] + " ").replace(/[\u2170-\u217B]/g, c => " " + ROMAN[c.charCodeAt(0) - 0x216F] + " ");
 function indexCatalog(d){
   CAT = d; catBy = {slug: new Map(), key: new Map()};
-  d.items.forEach((r, i) => { const it = {slug: r[0], title: r[1], author: r[2], latest: r[3], full: !!r[4], genres: r[5].map(g => d.genres[g]), rank: i, key: KEY(r[1]), akey: KEY(r[2])};
+  d.items.forEach((r, i) => { const it = {slug: r[0], title: r[1], author: r[2], latest: r[3], full: !!r[4], genres: r[5].map(g => d.genres[g]), rank: i, key: KEY(roman(r[1])), akey: KEY(r[2])};
     catBy.slug.set(it.slug, it); if (!catBy.key.has(it.key)) catBy.key.set(it.key, it); });
 }
 // a library novel's catalog entry: by its saved links, its slug, or its name
