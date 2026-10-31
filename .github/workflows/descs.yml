@@ -5,6 +5,9 @@ on:
   schedule:
     - cron: "0 5 * * *"   # every day 05:00 UTC
   workflow_dispatch: {}
+  push:                  # also when this file or the collector changes, so a fix starts at once
+    branches: [main]
+    paths: [".github/workflows/descs.yml", "catalog/descs.py"]
 permissions:
   contents: write
 concurrency: catalog   # never at the same time as «تحديث الفهرس»: both commit to catalog/
