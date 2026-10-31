@@ -23,6 +23,15 @@ def get(path):
             print("retry", path, e, flush=True); time.sleep(5 * (attempt + 1))
     return ""
 
+def chapter_no(block):
+    """Newest chapter number from the row's chapter title: "Chapter 1432 …", "Vol 4 Chapter 5269: …", "Ch. 12".
+    Side stories, afterwords and author notes carry no main-story number, so they give 0 (the last known number is kept)."""
+    t = re.search(r'class="chr-text chapter-title">\s*([^<]*)', block)
+    text = html.unescape(t.group(1)) if t else ""
+    if re.search(r"side[\s-]*stor|\bextra\b|\bspecial\b", text, re.I): return 0
+    m = re.search(r"\b(?:chapter|ch\.?)\s*(\d+)", text, re.I) or re.search(r'/book/[^"/]+/[a-z]*chapter-(\d+)', block)
+    return int(m.group(1)) if m else 0
+
 def parse(page):
     out = []
     for block in page.split('<h3 class="novel-title">')[1:]:
@@ -30,10 +39,8 @@ def parse(page):
         if not m: continue
         slug, title = m.group(1), html.unescape(m.group(2))
         au = re.search(r'class="author"><span[^>]*></span>([^<]*)<', block)
-        # newest chapter: its title says "Chapter 1432 …"; links are not reliable ("cchapter-1432-…", "gentle-snow-after-story-2")
-        ch = re.search(r'class="chr-text chapter-title">\s*(?:Chapter|Ch\.?)\s*(\d+)', block, re.I) or re.search(r'/book/[^"/]+/[a-z]*chapter-(\d+)', block)
         out.append({"slug": slug, "title": title, "author": html.unescape(au.group(1)).strip() if au else "",
-                    "latest": int(ch.group(1)) if ch else 0, "full": "label-full" in block[:600]})
+                    "latest": chapter_no(block), "full": "label-full" in block[:600]})
     return out
 
 disp = lambda g: re.sub(r"\s+", " ", g.replace("-", " ")).strip().title()   # "anime-&-comics" -> "Anime & Comics"
