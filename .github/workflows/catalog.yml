@@ -17,9 +17,11 @@ jobs:
         with:
           python-version: "3.12"
       - run: python catalog/build.py
+      # Arabic names and descriptions from ملوك الروايات; a failure there must not lose the main catalog
+      - run: python catalog/arabic.py || echo "arabic.json kept as it was"
       - name: Commit if it changed
         run: |
           git config user.name "catalog-bot"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add catalog/catalog.json
+          git add catalog/catalog.json catalog/arabic.json
           git diff --cached --quiet || { git commit -m "تحديث الفهرس الأسبوعي" && git push; }

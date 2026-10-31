@@ -179,3 +179,5 @@ body[data-tab="cat"] #libControls,body[data-tab="lib"] #catControls,body[data-ta
 .sb span,.sb small{font-size:10px;color:var(--muted);font-variant-numeric:tabular-nums}
 .zoom{position:fixed;inset:0;z-index:60;background:rgba(0,0,0,.92);display:flex;align-items:center;justify-content:center;padding:16px;cursor:zoom-out}
 .zoom img{max-width:100%;max-height:100%;object-fit:contain;border-radius:10px}
+.ar-name{color:var(--accent)}
+.ar-line a{color:var(--accent);font-weight:600}

@@ -518,7 +518,9 @@ function drawDetail(){
   const ht = el("div", "body");
   const t = el("h2", "p-title", n.title); t.dir = "auto"; ht.appendChild(t);
   if (n.altTitle){ const s = el("p", "sub", n.altTitle); s.dir = "auto"; ht.appendChild(s); }
-  if (n.titleAr) ht.appendChild(el("p", "p-title-ar", n.titleAr));
+  const kol = arFor(n); // its Arabic translation on ملوك الروايات, if any: name and description stand in for missing ones
+  const titleAr = n.titleAr || (kol ? kol[1] : ""), descAr = n.descAr || (kol ? kol[4] : "");
+  if (titleAr) ht.appendChild(el("p", "p-title-ar", titleAr));
   if (n.author) ht.appendChild(el("p", "sub", "المؤلف: " + n.author));
   if ((n.genres||[]).length){ const tg = el("div", "tags"); n.genres.forEach(g => tg.appendChild(el("span", "tag", g))); ht.appendChild(tg); }
   const st = el("span", "badge s-" + n.status, STATUS[n.status]); st.style.alignSelf = "flex-start"; ht.appendChild(st);
@@ -543,11 +545,11 @@ function drawDetail(){
   w.append(el("p", "h3", "القوائم"), sh);
   // description + translation
   const dr = el("div", "p-top"); dr.appendChild(el("p", "h3", "الوصف"));
-  const ar = !!showAr[n.key] && !!n.descAr;
-  if (n.descAr){ const seg = el("div", "seg"); [["الأصل", false], ["العربية", true]].forEach(([lb, v]) => { const b = btn("", lb, () => { showAr[n.key] = v; drawDetail(); }); b.setAttribute("aria-pressed", ar === v); seg.appendChild(b); }); dr.appendChild(seg); }
+  const ar = (!!showAr[n.key] || !n.desc) && !!descAr;
+  if (descAr && n.desc){ const seg = el("div", "seg"); [["الأصل", false], ["العربية", true]].forEach(([lb, v]) => { const b = btn("", lb, () => { showAr[n.key] = v; drawDetail(); }); b.setAttribute("aria-pressed", ar === v); seg.appendChild(b); }); dr.appendChild(seg); }
   w.appendChild(dr);
-  const body = el("p", "p-desc", ar ? n.descAr : (n.desc || "لا يوجد وصف لهذه الرواية.")); body.dir = ar || !n.desc ? "rtl" : "ltr"; w.appendChild(body);
-  if (!n.descAr || !n.titleAr){
+  const body = el("p", "p-desc", ar ? descAr : (n.desc || "لا يوجد وصف لهذه الرواية.")); body.dir = ar || !n.desc ? "rtl" : "ltr"; w.appendChild(body);
+  if (!descAr || !titleAr){
     const tr = el("div", "acts");
     const b = btn("btn", trBusy[n.key] ? "جارٍ الترجمة…" : "ترجمة الاسم والوصف", () => translate(n)); b.disabled = !!trBusy[n.key];
     const g = el("a", "btn", "ترجمة Google"); g.target = "_blank"; g.rel = "noopener";

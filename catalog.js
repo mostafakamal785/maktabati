@@ -49,10 +49,40 @@ async function loadCatalog(refresh){
     if (r.ok){ const d = await r.json(); if (!CAT || d.updatedAt !== CAT.updatedAt){ indexCatalog(d); await setMeta("catalog", d); } }
   } catch(e) { /* offline: keep the saved copy */ }
   if (!CAT) return;
+  await loadArabic(refresh);
   // first sight of a novel in the catalog sets the baseline, so only later releases count as new
   const fresh = lib().filter(n => (!(n.seenLatest > 0) || n.seenFull == null) && catFor(n));
   fresh.forEach(n => { if (!(n.seenLatest > 0)) markSeen(n); if (n.seenFull == null) n.seenFull = catFor(n).full; });
   if (fresh.length) await putNovels(fresh);
+}
+
+/* ---------- «ملوك الروايات»: the Arabic translations (catalog/arabic.json), matched by English title ---------- */
+// rows: [slug, Arabic title, English title, author, Arabic description, newest translated chapter, Arabic genres]
+let AR = null, arBy = new Map();
+const kolUrl = slug => "https://kolnovel.com/series/" + slug + "/";
+function indexArabic(d){
+  AR = d; arBy = new Map();
+  // the English field may hold several names: "Solo Leveling , 나 혼자만 레벨업", "Reverend Insanity | Master of GU"
+  d.items.forEach(r => { [r[2], ...String(r[2]).split(/[,|،/]|\s-\s/), r[1]].forEach(t => { const k = KEY(roman(t)); if (k.length > 3 && !arBy.has(k)) arBy.set(k, r); }); });
+  // catalog novels learn their Arabic name, so the catalog search finds them in Arabic too
+  if (CAT) catBy.slug.forEach(it => { const r = arBy.get(it.key); it.ar = r || null; it.arKey = r ? KEY(r[1]) : ""; });
+}
+async function loadArabic(refresh){
+  if (!AR && meta.arabic) indexArabic(meta.arabic);
+  if (refresh || !AR) try {
+    const r = await fetch("catalog/arabic.json", {cache: "no-cache"});
+    if (r.ok){ const d = await r.json(); if (!AR || d.updatedAt !== AR.updatedAt){ indexArabic(d); await setMeta("arabic", d); } }
+  } catch(e) { /* offline: keep the saved copy */ }
+  if (AR && CAT && !catBy.slug.values().next().value.hasOwnProperty("ar")) indexArabic(AR);
+}
+function arFor(n){
+  if (!AR) return null; const c = catFor(n);
+  return (c && c.ar) || arBy.get(n.key) || (n.aliases||[]).map(a => arBy.get(a)).find(Boolean) || (n.altTitle && arBy.get(KEY(roman(n.altTitle)))) || (n.titleAr && arBy.get(KEY(n.titleAr))) || null;
+}
+// "translated into Arabic up to chapter N", with the link; the chapter counts elsewhere stay the English ones
+function arLine(r){
+  const p = el("p", "small ar-line", "مترجمة للعربية حتى الفصل " + (r[5] || "؟") + " على ملوك الروايات ");
+  const l = el("a", "", "افتحها"); l.href = kolUrl(r[0]); l.target = "_blank"; l.rel = "noopener"; p.appendChild(l); return p;
 }
 
 /* ---------- «مقترحة لك»: catalog novels that share the genres you read most ---------- */
@@ -82,6 +112,7 @@ function catSection(n){
   const p = el("p", "small", c ? "في الفهرس: " + c.title + " · آخر فصل " + (c.latest || "؟") + " · " + (c.full ? "مكتملة" : "مستمرة")
     : "غير مربوطة بالفهرس، فلا يظهر لها عدد الفصول ولا الفصول الجديدة."); p.dir = "auto";
   box.append(p, btn("btn", c ? "تغيير الربط" : "اربطها بالفهرس", () => linkCatSheet(n)));
+  const a = arFor(n); if (a){ const wrap = el("div"); wrap.append(box, arLine(a)); return wrap; }
   return box;
 }
 function catMatches(q, limit){
@@ -161,7 +192,7 @@ function renderCatalog(){
   let items = CAT.items.map(r => catBy.slug.get(r[0])).filter(it =>
     (!cview.genres.length || cview.genres.every(g => it.genres.includes(g))) &&
     (cview.state === "all" || (cview.state === "full") === it.full) &&
-    (!q || it.key.includes(q) || it.akey.includes(q)));
+    (!q || it.key.includes(q) || it.akey.includes(q) || (it.arKey && it.arKey.includes(q))));
   if (cview.hideMine) items = items.filter(it => !inLibrary(it));
   if (cview.sort === "forYou"){ const sc = forYouScore(); items = items.filter(it => sc(it) > 0).sort((a, b) => sc(b) - sc(a)); }
   else if (cview.sort === "chapters") items.sort((a, b) => b.latest - a.latest); else if (cview.sort === "name") items.sort((a, b) => a.title.localeCompare(b.title));
@@ -176,6 +207,7 @@ function catCard(it){
   const cv = btn("cover", "", () => catDetail(it), "تفاصيل " + it.title); const im = document.createElement("img"); im.src = npCover(it.slug); im.alt = ""; im.loading = "lazy"; im.onerror = () => { cv.textContent = it.title.charAt(0); }; cv.appendChild(im);
   const body = el("div", "body");
   const open = btn("open", "", () => catDetail(it)); const t = el("h3", "title", it.title); t.dir = "auto"; open.appendChild(t); body.appendChild(open);
+  if (it.ar) body.appendChild(el("p", "sub ar-name", it.ar[1]));
   if (it.author) body.appendChild(el("p", "sub", it.author));
   body.appendChild(el("p", "sub", (it.latest ? "آخر فصل " + it.latest.toLocaleString("ar") + " · " : "") + (it.full ? "مكتملة" : "مستمرة")));
   if (it.genres.length){ const tg = el("div", "tags"); it.genres.slice(0, 4).forEach(g => tg.appendChild(el("span", "tag", g))); body.appendChild(tg); }
@@ -199,6 +231,7 @@ function drawCatDetail(page, it){
   cv.style.cursor = "zoom-in"; cv.onclick = () => { if (im.isConnected) zoomCover(im.src); };
   const ht = el("div", "body");
   const t = el("h2", "p-title", it.title); t.dir = "auto"; ht.appendChild(t);
+  if (it.ar) ht.appendChild(el("p", "p-title-ar", it.ar[1]));
   if (it.author) ht.appendChild(el("p", "sub", "المؤلف: " + it.author));
   if (it.genres.length){ const tg = el("div", "tags"); it.genres.forEach(g => tg.appendChild(el("span", "tag", g))); ht.appendChild(tg); }
   ht.appendChild(el("p", "sub", (it.latest ? "آخر فصل " + it.latest.toLocaleString("ar") + " · " : "") + (it.full ? "مكتملة" : "مستمرة")));
@@ -210,7 +243,8 @@ function drawCatDetail(page, it){
   const l = el("a", "btn", "صفحتها في الموقع"); l.href = npUrl(it.slug); l.target = "_blank"; l.rel = "noopener";
   const g = el("a", "btn", "ابحث عنها في Google"); g.href = "https://www.google.com/search?q=" + encodeURIComponent(it.title + " novel"); g.target = "_blank"; g.rel = "noopener";
   a.append(l, g); w.appendChild(a);
-  w.appendChild(el("p", "small", "الوصف غير متاح هنا، لأن novelping لا يسمح للأدوات الآلية بقراءة صفحات الروايات. تجده في «صفحتها في الموقع»."));
+  if (it.ar && it.ar[4]){ w.append(el("p", "h3", "الوصف"), el("p", "p-desc", it.ar[4]), el("p", "small", "الوصف من ترجمتها العربية على ملوك الروايات."), arLine(it.ar)); }
+  else { if (it.ar) w.appendChild(arLine(it.ar)); w.appendChild(el("p", "small", "الوصف غير متاح هنا، لأن novelping لا يسمح للأدوات الآلية بقراءة صفحات الروايات. تجده في «صفحتها في الموقع».")); }
 }
 function addFromCatalog(it, done){
   const f = sheet(it.title); f.querySelector("h2").dir = "auto";
