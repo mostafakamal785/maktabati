@@ -85,6 +85,38 @@ function arLine(r){
   const l = el("a", "", "افتحها"); l.href = kolUrl(r[0]); l.target = "_blank"; l.rel = "noopener"; p.appendChild(l); return p;
 }
 
+/* ---------- English descriptions from freewebnovel: catalog/desc/<xx>.json, one small file per lookup ---------- */
+const descFiles = new Map();
+// the same djb2 hash catalog/descs.py uses to place a slug in one of 256 files
+function descShard(slug){ let h = 5381; for (let i = 0; i < slug.length; i++) h = (Math.imul(h, 33) + slug.charCodeAt(i)) >>> 0; return (h & 255).toString(16).padStart(2, "0"); }
+async function catDesc(slug){
+  const k = descShard(slug);
+  if (!descFiles.has(k)) descFiles.set(k, fetch("catalog/desc/" + k + ".json").then(r => r.ok ? r.json() : {}).catch(() => { descFiles.delete(k); return {}; }));
+  return (await descFiles.get(k))[slug] || "";
+}
+// the English description with a button that translates it once and keeps the Arabic on this device
+function descBlock(slug, onEmpty){
+  const box = el("div", "desc-box"); box.appendChild(el("p", "small", "جارٍ تحميل الوصف…"));
+  catDesc(slug).then(async d => {
+    box.innerHTML = ""; if (!d){ if (onEmpty) onEmpty(box); return; }
+    const saved = meta["tr:" + slug];
+    const p = el("p", "p-desc", saved || d); p.dir = saved ? "rtl" : "ltr";
+    box.append(el("p", "h3", "الوصف"), p);
+    const row = el("div", "acts"); box.appendChild(row);
+    const src = el("p", "small", "الوصف من freewebnovel."); box.appendChild(src);
+    if (saved){ row.appendChild(btn("btn", "الأصل الإنجليزي", () => { const ar = p.dir === "rtl"; p.textContent = ar ? d : saved; p.dir = ar ? "ltr" : "rtl"; })); return; }
+    const b = btn("btn", "ترجمة للعربية", async () => {
+      if (!navigator.onLine){ toast("الترجمة تحتاج إنترنت"); return; }
+      b.disabled = true; b.textContent = "جارٍ الترجمة…";
+      try { const ar = await mt(d); await setMeta("tr:" + slug, ar); p.textContent = ar; p.dir = "rtl"; b.remove(); }
+      catch(e){ b.disabled = false; b.textContent = "ترجمة للعربية"; toast(e.message === "quota" ? "انتهت الترجمات المجانية لليوم، استخدم ترجمة Google" : "تعذّرت الترجمة، حاول لاحقًا"); }
+    });
+    const g = el("a", "btn", "ترجمة Google"); g.target = "_blank"; g.rel = "noopener"; g.href = "https://translate.google.com/?sl=en&tl=ar&op=translate&text=" + encodeURIComponent(d.slice(0, 4500));
+    row.append(b, g);
+  });
+  return box;
+}
+
 /* ---------- «مقترحة لك»: catalog novels that share the genres you read most ---------- */
 // each library novel votes for its genres: more for what you read, finished or rated well, less for what you dropped
 function forYouScore(){
@@ -244,7 +276,10 @@ function drawCatDetail(page, it){
   const g = el("a", "btn", "ابحث عنها في Google"); g.href = "https://www.google.com/search?q=" + encodeURIComponent(it.title + " novel"); g.target = "_blank"; g.rel = "noopener";
   a.append(l, g); w.appendChild(a);
   if (it.ar && it.ar[4]){ w.append(el("p", "h3", "الوصف"), el("p", "p-desc", it.ar[4]), el("p", "small", "الوصف من ترجمتها العربية على ملوك الروايات."), arLine(it.ar)); }
-  else { if (it.ar) w.appendChild(arLine(it.ar)); w.appendChild(el("p", "small", "الوصف غير متاح هنا، لأن novelping لا يسمح للأدوات الآلية بقراءة صفحات الروايات. تجده في «صفحتها في الموقع».")); }
+  else {
+    w.appendChild(descBlock(it.slug, box => box.appendChild(el("p", "small", "لا يوجد وصف لهذه الرواية بعد. تجده في «صفحتها في الموقع»."))));
+    if (it.ar) w.appendChild(arLine(it.ar));
+  }
 }
 function addFromCatalog(it, done){
   const f = sheet(it.title); f.querySelector("h2").dir = "auto";

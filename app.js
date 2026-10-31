@@ -549,6 +549,8 @@ function drawDetail(){
   if (descAr && n.desc){ const seg = el("div", "seg"); [["الأصل", false], ["العربية", true]].forEach(([lb, v]) => { const b = btn("", lb, () => { showAr[n.key] = v; drawDetail(); }); b.setAttribute("aria-pressed", ar === v); seg.appendChild(b); }); dr.appendChild(seg); }
   w.appendChild(dr);
   const body = el("p", "p-desc", ar ? descAr : (n.desc || "لا يوجد وصف لهذه الرواية.")); body.dir = ar || !n.desc ? "rtl" : "ltr"; w.appendChild(body);
+  // no description of its own: the catalog's (freewebnovel) one, when the novel is linked
+  if (!n.desc && !descAr && catFor(n)){ dr.remove(); body.replaceWith(descBlock(catFor(n).slug)); }
   if (!descAr || !titleAr){
     const tr = el("div", "acts");
     const b = btn("btn", trBusy[n.key] ? "جارٍ الترجمة…" : "ترجمة الاسم والوصف", () => translate(n)); b.disabled = !!trBusy[n.key];

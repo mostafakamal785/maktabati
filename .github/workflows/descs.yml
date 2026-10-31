@@ -1,0 +1,26 @@
+# Fills catalog/desc/ with novel descriptions from freewebnovel, about 5½ hours of work per run.
+# Daily until every catalog novel has been looked up (about three runs), then only the new ones.
+name: أوصاف الروايات
+on:
+  schedule:
+    - cron: "0 5 * * *"   # every day 05:00 UTC
+  workflow_dispatch: {}
+permissions:
+  contents: write
+concurrency: catalog   # never at the same time as «تحديث الفهرس»: both commit to catalog/
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 350
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: python catalog/descs.py 320
+      - name: Commit if it changed
+        run: |
+          git config user.name "catalog-bot"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add catalog/desc
+          git diff --cached --quiet || { git commit -m "أوصاف الروايات" && git pull --rebase && git push; }
